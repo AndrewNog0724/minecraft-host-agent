@@ -1,0 +1,154 @@
+//! ui 渲染：事件泵——把总线事件分流为进度条（R4）与落盘（R5/R6）。
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rust_decimal::Decimal;
+
+use crate::events::{AppEvent, EventBus, ProgressEvent, TaskStatus, TaskTrace, TraceEvent};
+use crate::store::Store;
+
+/// 事件泵：订阅总线，驱动进度条 + 累积任务轨迹 + 写 usage/events 落盘。
+/// 泵在 TaskFinished 或通道关闭时退出。
+pub async fn pump(
+    bus: EventBus,
+    store: Arc<Store>,
+    bars: MultiProgress,
+) -> Result<(), tokio::sync::broadcast::error::RecvError> {
+    let mut rx = bus.subscribe();
+    // step_id → 进度条
+    let mut step_bars: HashMap<String, ProgressBar> = HashMap::new();
+    // 任务轨迹由泵持有并落盘（R5 的"非黑盒"主体）
+    let mut trace: Option<TaskTrace> = None;
+    // 本次会话累计费用展示
+    let cost_bar = bars.add(ProgressBar::new_spinner());
+    cost_bar.set_style(spinner_style());
+    cost_bar.set_message("本次费用：¥0");
+
+    loop {
+        let event = rx.recv().await?;
+        match event {
+            AppEvent::Progress(p) => handle_progress(&bars, &mut step_bars, &p),
+            AppEvent::Usage(u) => {
+                let _ = store.append_usage(&u);
+                cost_bar.set_message(format!("本次费用：¥{:.4}", ledger_display(&store)));
+            }
+            AppEvent::Trace(t) => match t {
+                TraceEvent::TaskStarted { trace: t0 } => {
+                    let _ = store.save_trace(&t0);
+                    trace = Some(t0);
+                }
+                TraceEvent::StepAdded { task_id, step } => {
+                    if let Some(tr) = trace.as_mut() {
+                        tr.steps.push(step);
+                        let _ = store.save_trace(tr);
+                    } else {
+                        let _ = store.append_event(&task_id, &serde_json::json!({"step": step}));
+                    }
+                }
+                TraceEvent::SpecDrafted { task_id, .. } => {
+                    let _ = store.append_event(
+                        &task_id,
+                        &serde_json::json!({"event": "spec_drafted", "at": chrono::Local::now().to_rfc3339()}),
+                    );
+                }
+                TraceEvent::SpecConfirmed { task_id, spec } => {
+                    let _ = store.append_event(
+                        &task_id,
+                        &serde_json::json!({
+                            "event": "spec_confirmed",
+                            "spec_id": spec.spec_id,
+                            "at": chrono::Local::now().to_rfc3339(),
+                        }),
+                    );
+                }
+                TraceEvent::TaskFinished { task_id, status } => {
+                    if let Some(tr) = trace.as_mut() {
+                        tr.status = status;
+                        tr.finished_at = Some(chrono::Local::now());
+                        let _ = store.save_trace(tr);
+                    }
+                    let _ = store.append_event(
+                        &task_id,
+                        &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
+                    );
+                    return Ok(());
+                }
+            },
+        }
+    }
+}
+
+/// 全局用量累计（从 usage 落盘文件读取，跨任务累计）。
+fn ledger_display(store: &Store) -> String {
+    let total: Decimal = store.read_usage().iter().map(|r| r.cost).sum();
+    format!("{:.4}", total)
+}
+
+/// 模板样式：模板为编译期常量，解析失败时退回内置样式（不 panic）。
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn handle_progress(
+    bars: &MultiProgress,
+    step_bars: &mut HashMap<String, ProgressBar>,
+    p: &ProgressEvent,
+) {
+    match p {
+        ProgressEvent::StepStarted { step, title, .. } => {
+            let bar = bars.add(ProgressBar::new_spinner());
+            bar.enable_steady_tick(std::time::Duration::from_millis(120));
+            bar.set_style(spinner_style());
+            bar.set_message(title.clone());
+            step_bars.insert(step.clone(), bar);
+        }
+        ProgressEvent::StepProgress {
+            step,
+            current,
+            total,
+            detail,
+            ..
+        } => {
+            let Some(bar) = step_bars.get(step) else {
+                return;
+            };
+            let detail_text = detail.clone().unwrap_or_default();
+            if let Some(total) = total {
+                if bar.length() != Some(*total) {
+                    bar.set_length(*total);
+                    bar.set_style(bar_style());
+                }
+                bar.set_position(*current);
+                bar.set_message(detail_text);
+            } else if !detail_text.is_empty() {
+                bar.set_message(detail_text);
+            }
+        }
+        ProgressEvent::StepFinished {
+            step, ok, detail, ..
+        } => {
+            if let Some(bar) = step_bars.remove(step) {
+                let mark = if *ok { "✔" } else { "✘" };
+                bar.finish_with_message(format!("{mark} {}", detail.clone().unwrap_or_default()));
+            }
+        }
+    }
+}
+
+/// 会话结束状态转可读文本。
+pub fn status_text(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Running => "进行中",
+        TaskStatus::Done => "已完成",
+        TaskStatus::Failed => "失败",
+        TaskStatus::Cancelled => "已取消",
+    }
+}

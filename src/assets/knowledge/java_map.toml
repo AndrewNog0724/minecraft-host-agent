@@ -1,0 +1,22 @@
+# L1 结构化事实：MC 版本 → Java 大版本映射（§8.9）
+# 来源：Minecraft Wiki 与各服务端官方文档；采集日期 2026-08-28
+# 匹配规则：取 min_version <= 目标版本 的最后一条；这里的 Java 大版本是"官方最低要求"
+[[entries]]
+min_version = "1.20.5"
+java_major = 21
+
+[[entries]]
+min_version = "1.18"
+java_major = 17
+
+[[entries]]
+min_version = "1.17"
+java_major = 16
+
+[[entries]]
+min_version = "1.12"
+java_major = 8
+
+[[entries]]
+min_version = "1.7.10"
+java_major = 8

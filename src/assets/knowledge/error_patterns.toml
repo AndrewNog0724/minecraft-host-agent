@@ -1,0 +1,51 @@
+# L-1 错误模式库：崩溃日志特征 → 确定性诊断（§8.6.5 / §8.9）
+# 来源：基线实验 T5 三份真实日志与常见开服故障归纳；采集日期 2026-08-28
+# diagnose 确定性匹配优先，LLM 兜底；新增模式 = 在此追加一节。
+[[patterns]]
+id = "java-version-mismatch"
+regex = "UnsupportedClassVersionError|has been compiled in a newer version|major\\.version"
+cause = "Java 版本不匹配：服务端需要的 Java 版本与当前运行时不一致"
+fix = "按 ServerSpec.java.required_major 重跑 Java 供给步骤，用受管 JRE 启动"
+
+[[patterns]]
+id = "port-in-use"
+regex = "Failed to bind to port|Address already in use|BindException"
+cause = "服务端口被其它进程占用"
+fix = "探测占用进程并提示结束，或改用空闲端口后更新 server.properties"
+
+[[patterns]]
+id = "eula-not-accepted"
+regex = "You need to agree to the EULA"
+cause = "尚未同意 Minecraft EULA"
+fix = "确认后写入 eula.txt(eula=true)，危险操作需用户二次确认"
+
+[[patterns]]
+id = "out-of-memory"
+regex = "OutOfMemoryError|Could not reserve enough space for object heap"
+cause = "JVM 内存不足：-Xmx 小于实际需要，或机器可用内存不足"
+fix = "按玩家数与机器内存重新推导 -Xmx，更新启动脚本"
+
+[[patterns]]
+id = "mod-incompatible"
+regex = "Incompatible mod set|Missing or unsupported mandatory dependencies|ModResolutionException|fabric.*incompatible"
+cause = "mod 集合不兼容：版本不匹配或缺依赖"
+fix = "重跑 mod 依赖解析（Modrinth），按解析结果替换 mods 目录"
+
+[[patterns]]
+id = "world-version-mismatch"
+regex = "Tried to load a level of an (older|newer) version|was saved with a different version"
+cause = "存档版本与服务端版本不符"
+fix = "提示玩家备份后选择：换服务端版本，或新建世界（危险操作需确认）"
+
+[[patterns]]
+id = "natfrp-auth-failed"
+regex = "natfrp.*(认证失败|鉴权失败|401|403)|frpc.*token"
+cause = "樱花frp 访问密钥无效或与隧道不匹配"
+fix = "引导用户重新获取访问密钥，或按 /system/clients 核对 frpc 版本后重建"
+
+[[patterns]]
+id = "natfrp-tunnel-down"
+regex = "frpc.*(连接失败|tunnel.*(offline|failed))|隧道.*离线"
+cause = "frpc 与节点连接中断或隧道失效"
+cause_hint = "先查本机服务监听，再查 frpc 进程，最后查节点状态与剩余流量"
+fix = "沿链路排查：本机监听 → frpc 进程 → 隧道状态/流量 → 节点探测"

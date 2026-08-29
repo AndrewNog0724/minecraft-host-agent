@@ -1,0 +1,57 @@
+# L1 结构化事实：mod 中文名称 → Modrinth 项目映射（§8.9）
+# 来源：Modrinth API v2 实测核对；采集日期 2026-08-28
+# 重要：2026-08 实测 Modrinth project 端点仅支持 project_id（按 slug 查询已 404），
+# 故本表存 project_id；slug 仅用于生成可读的方案名（spec_id）。
+# search_mods 工具先查本表，未命中再走 Modrinth 文本检索——
+# 从机制上根治通用 Agent "不知道英文标识就编一个" 的幻觉。
+[[aliases]]
+zh = "暮色森林"
+project = "1XoXkBdT"
+slug = "twilightforest"
+# 注：暮色森林官方仅发布于 CurseForge；此处为 Modrinth 站内维护的移植版
+# The Twilight Forest Unofficial。升级迁移（FR-11）时需留意版本滞后。
+
+[[aliases]]
+zh = "机械动力"
+project = "LNytGWDc"
+slug = "create"
+
+[[aliases]]
+zh = "沉浸工程"
+project = "tIm2nV03"
+slug = "immersive-engineering"
+
+[[aliases]]
+zh = "应用能源2"
+project = "XxWD5pD3"
+slug = "ae2"
+
+[[aliases]]
+zh = "AE2"
+project = "XxWD5pD3"
+slug = "ae2"
+
+[[aliases]]
+zh = "物品管理器"
+project = "u6dRKJwZ"
+slug = "jei"
+
+[[aliases]]
+zh = "苹果皮"
+project = "EsAfCjCV"
+slug = "appleskin"
+
+[[aliases]]
+zh = "矿物追踪"
+project = "nvQzSEkH"
+slug = "jade"
+
+[[aliases]]
+zh = "钠"
+project = "AANobbMI"
+slug = "sodium"
+
+[[aliases]]
+zh = "锂"
+project = "gvQqBUqZ"
+slug = "lithium"

@@ -1,40 +1,34 @@
-# agent-rs
+# mc-host-agent
 
-一个用 Rust 从零构建的、高度场景定制化的 AI Agent。本项目是程序设计课程大作业。
+一个用 Rust 从零构建的、高度场景定制化的 AI Agent：**MC 联机设施建设 Agent**——面向 Minecraft Java 版好友联机场景的"开服管家"。本项目是程序设计课程大作业。
 
-> **当前状态**：项目处于启动阶段，选题与需求文档正在讨论中。简介、配置、演示等章节将随开发进度逐步补全（文中以 TODO 标注）。
+> **当前状态**：MVP（M1）已实现——一句话开服主流程（需求理解 → 决策树 → 部署 → 就绪）全部走通，R1–R6 固定功能完成。故障诊断（FR-09）与樱花frp 穿透编排（FR-08）随 P1 互试版交付。
 
 ## 项目简介
 
-本项目从真实的生活 / 学习 / 娱乐场景出发，针对一个通用 Agent 解决不好的具体痛点，用 Rust 设计并实现一个场景定制化的 AI Agent，其中包含**至少两项**针对该场景的专门优化或定制逻辑，使它在这个场景下明显优于通用 Agent，或能做到通用 Agent 做不到的事。
+玩家用一句自然语言描述需求（"我们 5 个人，2 个正版 3 个离线，想玩带暮色森林的生存"），Agent 在本机完成方案推导、服务端部署、Java 供给、连接说明交付的全流程。
 
-- **痛点场景**：TODO（选题确定后填写）
-- **场景定制方案**：TODO（至少两项，选题确定后填写）
+- **痛点场景**：开服知识分散且过时、决策分支多（账号 × 服务端 × 版本 × 网络）、报错黑盒、内网穿透劝退（详见 `docs/project-design.md` §2 与 `docs/topic-statement.md`）
+- **场景定制方案**：
+  1. **开服决策树工作流**——全部决策分支固化为 Rust 确定性流程，LLM 只负责理解需求与措辞追问；
+  2. **版本兼容知识库 + 实时校验**——版本/mod 事实只来自内置知识库（L1）与 Mojang / PaperMC / Fabric / Modrinth 官方 API（L2），LLM 无凭记忆作答的通道，幻觉版本号被拒并给就近建议；
+  3. **Java 全自动供给**——系统无合适 Java 时自动下载 Adoptium 受管 JRE（zip/tar.gz 免安装、sha256 校验、不碰系统配置）；
+  4. **MC 崩溃日志诊断**（P1）——错误模式库确定性匹配优先。
 
-作业背景与完整要求见 [`docs/`](./docs)：
+## 功能清单（R1–R6）
 
-| 文档 | 内容 |
-| --- | --- |
-| [`docs/background.md`](./docs/background.md) | 作业背景：为什么要做场景定制化 Agent |
-| [`docs/requirements.md`](./docs/requirements.md) | 作业要求：目标、R1–R6 固定功能、提交物与评分标准 |
-| [`docs/agent-architecture.md`](./docs/agent-architecture.md) | 技术参考：工具调用、Agent Loop、MCP / Skills / 知识库 |
-| [`docs/quick-start.md`](./docs/quick-start.md) | 流程指南：定选题 → 迭代设计文档 → 实现 → 展示 |
-
-## 功能规划
-
-对照作业固定功能要求（R1–R6，详见 [`docs/requirements.md`](./docs/requirements.md)）的实现清单：
-
-- [ ] **R1 核心逻辑用 Rust 实现**：数据处理、算法流程、API 调用编排均在 Rust 主控流程中
-- [ ] **R2 用户交互界面**：至少提供 Web / CLI 交互式终端 / 桌面 / 移动端之一，可触发任务并展示结果
-- [ ] **R3 可自定义模型配置**：支持修改 API Endpoint、API Key、上下文长度、思考模式、API 价格等
-- [ ] **R4 实时进度渲染与打断**：超过 3 秒的任务实时渲染进度，并允许用户随时打断
-- [ ] **R5 上下文历史管理**：管理多轮对话与任务状态历史，可查看、可保存 / 加载完整会话上下文
-- [ ] **R6 Token 用量与价格统计**：精确统计每次调用的输入 / 输出 token 数并换算成本，支持预算上限与超限自动中断
+- [x] **R1 核心逻辑用 Rust 实现**：决策树、执行流水线、全部 API 编排、进程与文件管理均在 Rust 单二进制内；LLM 客户端亦为自研薄实现（reqwest + SSE）
+- [x] **R2 用户交互界面**：CLI 交互式终端（clap + dialoguer + indicatif），`agent new` 触发开服任务
+- [x] **R3 可自定义模型配置**：`config.toml` + `.env`，支持 Endpoint / API Key / 上下文长度 / 思考模式 / 价格表（内置常见模型预设）与 `config set` 改写
+- [x] **R4 实时进度渲染与打断**：下载字节进度、步骤进度条、日志滚动；Ctrl-C 经 CancellationToken 干净退出，不留孤儿进程
+- [x] **R5 上下文历史管理**：任务轨迹逐轮落盘（`sessions/`），可查看（`sessions show`）、导出（`sessions export`，自动打码）；开服档案可保存 / 加载（`profiles/`）
+- [x] **R6 Token 用量与价格统计**：每次调用强制生成 UsageRecord（无 usage 的上游记次数并标注），按价格表换算费用，`usage` 汇总展示，预算超限自动中断
 
 ## 环境要求
 
-- Rust 1.85+（项目使用 edition 2024）
-- 其他依赖：TODO（随开发补充）
+- Rust 1.85+（edition 2024）
+- 网络：可访问 Mojang / Modrinth / Adoptium 等 API（国内网络建议配置 Adoptium 镜像，见下）
+- 无需预装 Java：缺 Java 时工具自动安装受管 JRE
 
 ## 构建与运行
 
@@ -42,28 +36,85 @@
 # 构建
 cargo build --release
 
-# 运行
-cargo run --release
-
-# 运行测试
+# 运行测试（不含联网测试）
 cargo test
+
+# 联网冒烟测试（真实上游 API）
+cargo test -- --ignored
 ```
 
 ## 配置说明
 
-TODO：说明如何配置模型 API Endpoint、API Key、上下文长度、思考模式、价格等（配置文件或设置界面），以及 Token 预算的设置方式。
+```bash
+# 1. 生成配置模板（数据目录：~/.mc-host-agent/，Windows 为 %APPDATA%\mc-host-agent\）
+cargo run --release -- config init
+
+# 2. 编辑配置文件：~/.mc-host-agent/config.toml
+#    必填两项：
+#      model.endpoint  —— OpenAI 兼容 API 地址（默认填了智谱 open.bigmodel.cn）
+#      model.model     —— 模型名
+# 3. 在 ~/.mc-host-agent/.env 中填入 API Key：
+#      AGENT_API_KEY=你的密钥
+
+# 4. 修改配置项示例
+cargo run --release -- config set model.model glm-5.2
+cargo run --release -- config set budget.limit 10      # 费用预算（超限自动中断）
+cargo run --release -- config set model.thinking true  # 思考模式（视模型支持）
+```
+
+国内网络建议启用 Adoptium 镜像（`[network]` 节，模板内有现成注释行）：
+
+```toml
+[network]
+adoptium_mirror = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium"
+```
 
 ## 演示用例
 
-TODO：补充能体现场景定制效果的演示用例。
+### 1. 一句话开服（主流程）
+
+```bash
+cargo run --release -- new "我们 5 个人，2 个正版 3 个离线，想玩带暮色森林的生存，MC 1.21.1"
+```
+
+工具将：调用 LLM 解析需求 → 决策树推导完整方案（混合认证 EasyAuth、Fabric 服、
+Java 21、内存分配、白名单）→ 就缺失信息追问（≤3 轮）→ 展示方案摘要与风险提示 →
+确认后自动完成部署 → 输出"朋友们怎么连"。
+
+### 2. 无 LLM 的手动方案（离线演示兜底）
+
+```bash
+cargo run --release -- plan
+```
+
+### 3. 查看历史与开销
+
+```bash
+cargo run --release -- sessions list            # 任务列表
+cargo run --release -- sessions show <任务ID>    # 逐步轨迹（LLM/工具/决策/执行）
+cargo run --release -- sessions export <任务ID>  # 导出完整上下文 JSON（已打码）
+cargo run --release -- usage                    # token 与费用统计
+cargo run --release -- profiles                 # 开服档案（可复用）
+```
 
 ## 项目结构
 
 ```text
 .
-├── docs/           # 文档（课程参考资料 + 本项目选题 / 需求文档）
-├── experiments/    # 通用 Agent 基线实验（手册与运行记录）
-├── src/            # Rust 源代码
+├── docs/                    # 课程文档（勿改）+ 本项目设计文档 / 选题陈述
+├── experiments/             # 通用 Agent 基线实验记录
+├── src/
+│   ├── main.rs              # clap 入口、取消总线装配
+│   ├── cli/                 # ui：子命令、交互问答、进度渲染（R2/R4）
+│   ├── agent.rs             # agent-core：需求理解窄循环、工具系统
+│   ├── llm.rs               # OpenAI 兼容自研客户端、SSE、预算守卫（R6）
+│   ├── knowledge/           # 静态知识库、五家上游 API 客户端、版本校验
+│   ├── provision/           # 决策树引擎、Java 供给、部署流水线、进程托管
+│   ├── store.rs             # 档案 / 会话 / 用量持久化（R5/R6）
+│   ├── config.rs            # 配置、价格表（R3）
+│   ├── events.rs            # 事件总线：进度 / 用量 / 轨迹三视图
+│   ├── spec.rs              # ServerSpec / ServerSpecDraft 核心数据结构
+│   └── assets/              # 定制内容：知识库 TOML、指南、提示词
 ├── Cargo.toml
 └── README.md
 ```

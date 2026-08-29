@@ -1,6 +1,6 @@
 # MC 联机设施建设 Agent · 需求与设计文档
 
-- **版本**：v0.4（活文档，持续迭代）
+- **版本**：v0.5（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -497,19 +497,39 @@ enum JavaRuntime {
 src/
 ├── main.rs            # clap 入口、取消总线装配
 ├── cli/               # ui：子命令、交互、进度渲染
-├── config/            # AppConfig、价格表、加载校验
-├── agent/             # agent-core：Loop、工具注册、Draft 解析
-├── llm/               # 客户端、SSE、结构化输出、用量钩子
-├── knowledge/         # 静态库、UpstreamClient、版本校验管线
+│   └── render.rs      #    事件泵：进度条 + 轨迹/用量落盘
+├── config.rs          # AppConfig、价格表、加载校验
+├── agent.rs           # agent-core：Loop、工具注册、Draft 解析
+├── llm.rs             # 客户端、SSE、结构化输出、用量钩子
+├── knowledge/         # 静态库、上游 API 客户端、版本校验管线
+│   ├── mod.rs         #   知识库加载、版本归一化/建议、依赖闭包展平
+│   └── upstream.rs    #   HttpBase（代理/镜像/重试）+ 5 家上游客户端
 ├── provision/         # 决策树引擎、Java 供给、下载、配置生成、进程管理
+│   ├── tree.rs        #   决策树：节点判定 + ServerSpec 唯一构造点
+│   ├── java.rs        #   Java 供给（§8.8）：探测→复用→受管安装
+│   ├── exec.rs        #   部署流水线：预检→Java→下载→配置→启动→就绪
+│   └── process.rs     #   服务端进程托管 + Drop 守卫
 ├── tunnel/            # P1
 ├── diagnose/          # P1：模式库、诊断环工具
-├── store/             # 档案/会话/用量持久化
+├── store.rs           # 档案/会话/用量持久化
+├── spec.rs            # ServerSpec / ServerSpecDraft / JavaPlan 等核心结构（§8.1）
 ├── events.rs          # ProgressEvent / UsageRecord / TaskTrace 与总线
 └── assets/            # 定制内容（§8.9）：knowledge/*.toml、guides/*.md、prompts/*.md
 ```
 
-每模块完成后独立可编译、可运行；M1 实现顺序：events → config → llm → knowledge → provision（含 Java 供给）→ agent → cli → store。
+每模块完成后独立可编译、可运行；M1 实现顺序：events → config → llm → knowledge → provision（含 Java 供给）→ agent → cli → store。`spec.rs` 为实现期从 provision 中独立出的核心结构模块（§8.1 全部类型），事件、配置、决策树与流水线共享。
+
+### 14.1 上游 API 实现期实测勘误（2026-08-28，编码前 spike 结论）
+
+实现时对 §11 数据源逐家做了真实连通性验证（测试见 `knowledge/upstream.rs` 冒烟用例，`cargo test -- --ignored`），发现并已适配三处与书面文档不符的变化：
+
+| 上游 | 书面假设 | 实测（2026-08-28） | 适配 |
+| --- | --- | --- | --- |
+| PaperMC | API v2（`api.papermc.io/v2`） | v2 已下线，请求返回 410 sunset | 改用官方 fill v3（`fill.papermc.io/v3`），构建下载项含 sha256 |
+| Adoptium | `GET /assets/latest/{major}/ga` | 该端点 404 | 改用 `/assets/feature_releases/{major}/ga`；哈希字段名为 `checksum`（即 sha256）；Linux/macOS 分发 tar.gz、Windows 分发 zip，两种解压均已实现 |
+| Modrinth | project 端点可用 slug 或 id | 按 slug 查询已 404，仅认 project_id | 别名表与工具链全部改存/传 project_id，slug 仅作可读展示名 |
+
+另两条实测结论：①暮色森林官方仅发布于 CurseForge，Modrinth 站内为社区移植版（别名表已注明）；②Minecraft 版本号体系已出现 `26.2` 形式（年份制），"26.2 形式合法但不存在于官方清单" 的拒绝逻辑不变，由清单存在性校验兜底。此外，国内网络实测官方 GitHub（Adoptium 下载域）不可达、TUNA 镜像可达，§8.8 的镜像策略已实现为 `[network] adoptium_mirror` 配置项（镜像优先、官方回退，同一 sha256 校验）。HttpBase 层已实现瞬时失败自动重试（连接/超时/截断，1s→2s→4s 退避）。
 
 ## 15. 决议记录
 
@@ -554,3 +574,4 @@ src/
 | 2026-08-28 | v0.2 | 合并为单一活文档；决议 D1–D8；新增 §8.8 Java 自动供给完整设计 |
 | 2026-08-28 | v0.3 | 决议 D9：樱花frp 为穿透默认方案；§8.6 重写为基于官方 API v4 OpenAPI 与 frpc 手册的全自动编排详案 |
 | 2026-08-28 | v0.4 | 新增 §8.9 定制内容分层体系（决议 D10）；工具集补 `load_guide`、仓库结构补 `assets/`、知识库小节补别名表与模式库 |
+| 2026-08-28 | v0.5 | M1 MVP 实现完成；新增 §14.1 上游 API 实测勘误（Paper fill v3 / Adoptium feature_releases / Modrinth project_id / TUNA 镜像）；仓库结构更新为实际代码布局（spec.rs 独立成模块） |

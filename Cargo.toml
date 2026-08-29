@@ -2,5 +2,52 @@
 name = "agent"
 version = "0.1.0"
 edition = "2024"
+description = "MC 联机设施建设 Agent：一句话开服管家（课程大作业）"
 
 [dependencies]
+# 异步运行时（§10）：进程管理、CancellationToken（R4）
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+# HTTP 客户端：SSE 流式必需，rustls 免 Windows 上 OpenSSL 链接负担
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
+eventsource-stream = "0.2"
+futures = "0.3"
+# 序列化：JSON 是 R5 落盘与 LLM 结构化输出的统一格式
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+# Schema 派生与校验：从类型派生 JSON Schema 约束 LLM 输出
+schemars = "1"
+jsonschema = "0.30"
+# 错误处理：模块内显式错误枚举，main 层聚合
+thiserror = "2"
+anyhow = "1"
+# CLI（R2）
+clap = { version = "4", features = ["derive"] }
+dialoguer = "0.11"
+indicatif = "0.18"
+# 版本解析（定制 2 第一道闸）
+semver = "1"
+# 哈希校验：Mojang 用 sha1，Modrinth 给 sha1/sha512，Adoptium 给 sha256
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+# 压缩解压：Java 供给（§8.8）。Windows zip 免安装包；Linux/macOS tar.gz，均纯 Rust
+zip = { version = "4", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+# 日志与观测
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 时间：落盘时间戳统一 RFC3339
+chrono = { version = "0.4", features = ["serde"] }
+# 临时文件：原子写与下载临时目录（NFR-3）
+tempfile = "3"
+# 费用精确累加（§8.1 UsageRecord.cost: Decimal）、ID 生成
+rust_decimal = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+# trait 上的 async fn（LlmClient 可替换 Fake 实现，§13）
+async-trait = "0.1"
+
+[dev-dependencies]
+# 暂无
