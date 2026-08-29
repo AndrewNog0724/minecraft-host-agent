@@ -7,3 +7,4 @@ config.toml
 
 # 演示/运行产物
 *.session.json
+# session-*.json
