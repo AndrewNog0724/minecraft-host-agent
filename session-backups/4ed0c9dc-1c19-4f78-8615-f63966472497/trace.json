@@ -1,0 +1,30 @@
+{
+  "task_id": "4ed0c9dc-1c19-4f78-8615-f63966472497",
+  "title": "I have 5 friends. We want to play Minecraft Java Edition 26.2. No mods.",
+  "spec_id": null,
+  "started_at": "2026-08-30T21:57:35.521925900+08:00",
+  "finished_at": null,
+  "steps": [
+    {
+      "kind": "llm",
+      "summary": "第 1 轮：2 个工具调用，文本 72 字",
+      "usage_refs": [],
+      "at": "2026-08-30T21:57:37.441678700+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    },
+    {
+      "kind": "llm",
+      "summary": "第 2 轮：1 个工具调用，文本 323 字",
+      "usage_refs": [],
+      "at": "2026-08-30T21:57:52.288857800+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    }
+  ],
+  "status": "running"
+}

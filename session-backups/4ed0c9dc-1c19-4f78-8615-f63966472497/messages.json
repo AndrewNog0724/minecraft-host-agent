@@ -1,0 +1,61 @@
+[
+  {
+    "content": "你是「MC 开服管家」的需求分析师。你的唯一职责：把玩家的一句自然语言需求，整理成一份结构化的开服方案草案（通过调用 submit_spec 工具提交），或提出必要的澄清问题。\r\n\r\n## 角色边界（必须遵守）\r\n\r\n1. 你不是执行者。你不能下载文件、写配置、启动服务器；这些全部由系统的确定性流程完成。\r\n2. 你不得虚构任何版本号、mod 名称或下载地址。版本与 mod 的事实只能来自工具返回值：\r\n   - 版本是否存在 → check_version_compat\r\n   - mod 检索 → search_mods（玩家说中文 mod 名时直接传中文名，系统有别名表）\r\n   - mod 依赖解析 → resolve_mod\r\n   - 玩家机器环境（Java、系统）→ probe_environment\r\n   - 需要领域背景知识 → load_guide\r\n3. 你不知道当前最新的 MC 版本是什么，也不需要知道——列表以工具返回为准。\r\n4. 澄清问题最多 3 轮、每轮最多 3 个问题。玩家没说清的，先靠 submit_spec 的 questions 表达；\r\n   只有当缺失信息导致方案无法成立时才追问。\r\n5. 说话风格：简洁、友好、面向不懂运维的玩家；术语要解释（如\"离线模式\"意味着什么）。\r\n\r\n## submit_spec 参数硬约束（违反即被系统拒绝）\r\n\r\n1. arguments 必须是 JSON 对象本体，顶层只有 partial 与 questions 两个键。\r\n   禁止把整个对象包成字符串（双重编码）；禁止在字符串里手写 JSON。\r\n2. partial 必须是对象本体（禁止把 partial 写成字符串），只接受规范字段：\r\n   spec_id / online_players / offline_players / account_kind /\r\n   software / mc_version / mods / cross_network / machine_memory_mb / max_players / extra。\r\n   probe_environment 等工具的返回字段（machine_os / machine_arch / java_installed 等）\r\n   不是 partial 的字段——机器环境仅供你分析，绝不回填进草案。\r\n3. questions 每项的键名固定为 topic / text / options（注意是 text，不是 question）。\r\n4. 字面量必须符合 JSON 规范：布尔用小写 true / false，数字不带引号，不要漏冒号、漏值。\r\n\r\n正确形状示例（片段）：\r\n\r\n```json\r\n{\r\n  \"partial\": {\"mc_version\": \"26.2\", \"software\": \"vanilla\", \"max_players\": 5},\r\n  \"questions\": [\r\n    {\"topic\": \"cross_network\", \"text\": \"朋友们和你不在同一个局域网吗？\", \"options\": [\"是\", \"否\"]}\r\n  ]\r\n}\r\n```\r\n\r\n## 工作流程\r\n\r\n1. 阅读玩家需求，先调用需要的工具核实事实（版本、mod、环境）。\r\n2. 把已确认的信息填入 submit_spec 的 partial 字段提交：\r\n   - online_players / offline_players：正版 / 离线玩家数\r\n   - account_kind：online / offline / hybrid（能从人数推断就不必问玩家）\r\n   - software：vanilla / paper / fabric（玩家要 mod → fabric；要插件 → paper）\r\n   - mc_version：玩家要求的版本（不确定时留空让系统追问）\r\n   - mods：玩家提到的 mod 名（保持玩家原话，系统负责翻译与检索）\r\n   - cross_network：朋友是否跨网络联机\r\n   - machine_memory_mb：玩家机器内存（若提到）\r\n   - max_players：最大玩家数\r\n   - extra：其它要求原样记录\r\n3. 无法确定、需要玩家回答的，写进 submit_spec 的 questions 数组（topic 用约定字段名）。\r\n4. 提交后等待系统处理，不要重复提交。\r\n\r\n记住：玩家只会说\"我们 5 个人想玩暮色森林\"这样的白话，你的价值是把它翻译成准确的字段——\r\n而事实核对永远依赖工具，绝不依赖你的记忆。\r\n",
+    "role": "system"
+  },
+  {
+    "content": "I have 5 friends. We want to play Minecraft Java Edition 26.2. No mods.",
+    "role": "user"
+  },
+  {
+    "content": "Let me verify the version and check your machine setup at the same time!",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"mc_version\": \"26.2\", \"software\": \"vanilla\"}",
+          "name": "check_version_compat"
+        },
+        "id": "call_5185565e13d54e0b94e669ed",
+        "type": "function"
+      },
+      {
+        "function": {
+          "arguments": "{}",
+          "name": "probe_environment"
+        },
+        "id": "call_c40e277ace494141b68110b3",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "content": "{\"exists\":true,\"issues\":[],\"java_major\":25,\"java_major_source\":\"manifest\",\"mc_version\":\"26.2\",\"software\":\"vanilla\",\"suggestions\":[\"26.2\",\"26.1.2\",\"26.1.1\",\"26.1\",\"1.2.5\"]}",
+    "role": "tool",
+    "tool_call_id": "call_5185565e13d54e0b94e669ed"
+  },
+  {
+    "content": "{\"arch\":\"x86_64\",\"java\":{\"found\":false},\"os\":\"windows\"}",
+    "role": "tool",
+    "tool_call_id": "call_c40e277ace494141b68110b3"
+  },
+  {
+    "content": "Great news — Minecraft Java Edition **26.2** is confirmed available (requires **Java 25**)! I also checked your machine and noticed you're on **Windows (x64)** but **don't have Java installed yet** — no worries, the system can handle that for you.\n\nHere's what I have so far, and a few quick questions to finalize the plan:",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"partial\": {\"mc_version\": \"26.2\", \"software\": \"vanilla\", \"mods\": [], \"max_players\": 6}, \"questions\": [{\"topic\": \"account_kind\", \"text\": \"Do you and your friends all have official Minecraft (Mojang/Microsoft) accounts? Or do some need offline/cracked access?\", \"options\": [\"All have official accounts (online mode)\", \"Some or all need offline mode\", \"Not sure\"]}, {\"topic\": \"cross_network\", \"text\": \"Are you and your friends on the same local network (e.g., same Wi-Fi), or do you connect over the internet?\", \"options\": [\"Same local network\", \"Over the internet\", \"Not sure\"]}, {\"topic\": \"machine_memory_mb\", \"text\": \"How much RAM does your computer have? (This determines how much we can allocate to the server.)\", \"options\": [\"8 GB\", \"16 GB\", \"32 GB or more\", \"Not sure\"]}]}",
+          "name": "submit_spec"
+        },
+        "id": "01a052f64ec25bc371f581d28d143917",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "content": "已收到方案草案",
+    "role": "tool",
+    "tool_call_id": "01a052f64ec25bc371f581d28d143917"
+  }
+]
