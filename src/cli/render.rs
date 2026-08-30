@@ -6,19 +6,20 @@ use std::sync::Arc;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_decimal::Decimal;
 
-use crate::events::{AppEvent, EventBus, ProgressEvent, TaskStatus, TaskTrace, TraceEvent};
+use crate::events::{AppEvent, ProgressEvent, TaskStatus, TaskTrace, TraceEvent};
 use crate::store::{SessionBackup, Store};
 
 /// 事件泵：订阅总线，驱动进度条 + 累积任务轨迹 + 写 usage/events 落盘。
 /// 同步镜像一份到仓库备份目录（v0.9.2 调试设施，备份失败只 warn 不影响主流程）。
+/// `rx` 必须由调用方在发布任何事件（含 TaskStarted）之前订阅——广播不可回放，
+/// 先发后订会静默丢事件导致 trace 不落盘（v0.9.3 实测勘误）。
 /// 泵在 TaskFinished 或通道关闭时退出。
 pub async fn pump(
-    bus: EventBus,
+    mut rx: tokio::sync::broadcast::Receiver<AppEvent>,
     store: Arc<Store>,
     bars: MultiProgress,
     backup: SessionBackup,
 ) -> Result<(), tokio::sync::broadcast::error::RecvError> {
-    let mut rx = bus.subscribe();
     // step_id → 进度条
     let mut step_bars: HashMap<String, ProgressBar> = HashMap::new();
     // 任务轨迹由泵持有并落盘（R5 的"非黑盒"主体）

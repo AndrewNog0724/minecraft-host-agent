@@ -18,11 +18,24 @@
 
 1. arguments 必须是 JSON 对象本体，顶层只有 partial 与 questions 两个键。
    禁止把整个对象包成字符串（双重编码）；禁止在字符串里手写 JSON。
-2. partial 只接受规范字段：spec_id / online_players / offline_players / account_kind /
+2. partial 必须是对象本体（禁止把 partial 写成字符串），只接受规范字段：
+   spec_id / online_players / offline_players / account_kind /
    software / mc_version / mods / cross_network / machine_memory_mb / max_players / extra。
    probe_environment 等工具的返回字段（machine_os / machine_arch / java_installed 等）
    不是 partial 的字段——机器环境仅供你分析，绝不回填进草案。
-3. 字面量必须符合 JSON 规范：布尔用小写 true / false，数字不带引号，不要漏冒号、漏值。
+3. questions 每项的键名固定为 topic / text / options（注意是 text，不是 question）。
+4. 字面量必须符合 JSON 规范：布尔用小写 true / false，数字不带引号，不要漏冒号、漏值。
+
+正确形状示例（片段）：
+
+```json
+{
+  "partial": {"mc_version": "26.2", "software": "vanilla", "max_players": 5},
+  "questions": [
+    {"topic": "cross_network", "text": "朋友们和你不在同一个局域网吗？", "options": ["是", "否"]}
+  ]
+}
+```
 
 ## 工作流程
 

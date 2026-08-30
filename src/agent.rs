@@ -343,10 +343,16 @@ impl<'a> RequirementAgent<'a> {
 
         for round in 1..=MAX_ROUNDS {
             if self.cancel.is_cancelled() {
+                // 取消同样落盘对话（v0.9.3：messages.json 对所有退出路径可用）
+                self.bus
+                    .publish(crate::events::TraceEvent::SessionMessages {
+                        task_id: self.task_id.clone(),
+                        messages: messages.clone(),
+                    });
                 return Err(AgentError::Cancelled);
             }
             let rate = self.deps.cfg.rate_for(&self.deps.cfg.model.model);
-            let resp = self
+            let resp = match self
                 .svc
                 .chat_traced(
                     &self.task_id,
@@ -357,7 +363,19 @@ impl<'a> RequirementAgent<'a> {
                     rate,
                     Some(tick.clone()),
                 )
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // LLM 级失败（网络/预算/截断）同样留痕对话，排障不再依赖退出方式
+                    self.bus
+                        .publish(crate::events::TraceEvent::SessionMessages {
+                            task_id: self.task_id.clone(),
+                            messages: messages.clone(),
+                        });
+                    return Err(e.into());
+                }
+            };
 
             // R5 留痕：一轮一次 TraceStep（含 D16 解析留痕）
             self.bus.publish(crate::events::TraceEvent::StepAdded {
@@ -453,8 +471,8 @@ impl<'a> RequirementAgent<'a> {
                             }
                             other => other,
                         };
-                        // 交卷形状规整（v0.8.1 实测勘误，决议 D16）
-                        let value = normalize_draft(value);
+                        // 交卷形状规整（v0.8.1/v0.9.3 实测勘误，决议 D16）
+                        let value = normalize_draft(value)?;
                         // Schema 校验（schemars 派生 → jsonschema 校验，§8.3）
                         let schema = serde_json::to_value(schemars::schema_for!(ServerSpecDraft))
                             .map_err(|e| format!("内部 schema 错误：{e}"))?;
@@ -572,12 +590,14 @@ impl<'a> RequirementAgent<'a> {
     }
 }
 
-/// 模型交卷形状规整（决议 D16，v0.8.1 实测勘误）——在 schema 校验前执行：
-/// 1. 顶层直接平铺 PartialSpec 字段（缺 `partial` 包装）→ 包一层；
-/// 2. questions 元素缺 `options`（schema 必填）→ 默认空数组（自由文本问答）。
+/// 模型交卷形状规整（决议 D16，v0.8.1/v0.9.3 实测勘误）——在 schema 校验前执行：
+/// 1. `partial` 字段被写成字符串（内嵌 JSON）→ 解出对象本体；
+/// 2. 顶层直接平铺 PartialSpec 字段（缺 `partial` 包装）→ 包一层；
+/// 3. questions 元素键名 `question` → 规范名 `text`（实测高频别名）；
+/// 4. questions 元素缺 `options`（schema 必填）→ 默认空数组（自由文本问答）。
 ///
-/// 两者都是确定性的形状归一，不臆造任何业务字段。
-fn normalize_draft(value: serde_json::Value) -> serde_json::Value {
+/// 全部是确定性的形状归一；无法修复的形状返回带重交指令的错误。
+fn normalize_draft(value: serde_json::Value) -> Result<serde_json::Value, String> {
     const PARTIAL_FIELDS: &[&str] = &[
         "spec_id",
         "online_players",
@@ -592,6 +612,37 @@ fn normalize_draft(value: serde_json::Value) -> serde_json::Value {
         "extra",
     ];
 
+    // ① partial 字符串化（v0.9.3 实测：{"partial": "{\"spec_id\": ...}"}
+    let value = match &value {
+        serde_json::Value::Object(map)
+            if matches!(map.get("partial"), Some(serde_json::Value::String(_))) =>
+        {
+            let mut map = map.clone();
+            let serde_json::Value::String(inner) = map.remove("partial").unwrap_or_default() else {
+                unreachable!("上方 match 已保证 partial 是字符串")
+            };
+            match serde_json::from_str::<serde_json::Value>(inner.trim()) {
+                Ok(v) if v.is_object() => {
+                    map.insert("partial".into(), v);
+                    serde_json::Value::Object(map)
+                }
+                Ok(_) => {
+                    return Err(
+                        "partial 字段被写成了字符串，且内容不是 JSON 对象。请把 partial 写成对象本体（键值对），不要整体加引号"
+                            .into(),
+                    )
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "partial 字段被写成了字符串，且内容不是合法 JSON：{e}。请把 partial 写成对象本体，最外层不要加引号；布尔用小写 true/false，不要漏冒号漏值"
+                    ))
+                }
+            }
+        }
+        _ => value,
+    };
+
+    // ② 顶层平铺字段 → 包一层 partial
     let value = match &value {
         serde_json::Value::Object(map)
             if !map.contains_key("partial")
@@ -604,19 +655,25 @@ fn normalize_draft(value: serde_json::Value) -> serde_json::Value {
         _ => value,
     };
 
+    // ③④ questions 键名别名与 options 缺省
     let mut value = value;
     if let Some(questions) = value.get_mut("questions")
         && let Some(items) = questions.as_array_mut()
     {
         for q in items.iter_mut() {
-            if let Some(obj) = q.as_object_mut()
-                && !obj.contains_key("options")
-            {
-                obj.insert("options".into(), json!([]));
+            if let Some(obj) = q.as_object_mut() {
+                if !obj.contains_key("text")
+                    && let Some(alias) = obj.remove("question")
+                {
+                    obj.insert("text".into(), alias);
+                }
+                if !obj.contains_key("options") {
+                    obj.insert("options".into(), json!([]));
+                }
             }
         }
     }
-    value
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -734,7 +791,7 @@ mod tests {
     #[test]
     fn 扁平交卷规整为partial包装() {
         let flat = json!({"software":"vanilla","mc_version":"1.21.1","cross_network":null});
-        let norm = normalize_draft(flat);
+        let norm = normalize_draft(flat).unwrap();
         assert!(norm["partial"].is_object());
         assert_eq!(norm["questions"], json!([]));
         assert_eq!(norm["partial"]["mc_version"], json!("1.21.1"));
@@ -746,13 +803,51 @@ mod tests {
             "partial": {"mc_version": "1.21.1"},
             "questions": [{"topic": "t", "text": "?", "options": ["a"]}]
         });
-        assert_eq!(normalize_draft(wrapped.clone()), wrapped);
+        assert_eq!(normalize_draft(wrapped.clone()).unwrap(), wrapped);
     }
 
     #[test]
     fn questions缺options补空数组() {
         let v = json!({"partial": {}, "questions": [{"topic": "t", "text": "?"}]});
-        assert_eq!(normalize_draft(v)["questions"][0]["options"], json!([]));
+        assert_eq!(
+            normalize_draft(v).unwrap()["questions"][0]["options"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn partial字符串化解包() {
+        // v0.9.3 实测：顶层正常，但 partial 的值是内嵌 JSON 的字符串
+        let v = json!({
+            "partial": "{\"mc_version\": \"26.2\", \"software\": \"vanilla\"}",
+            "questions": []
+        });
+        let norm = normalize_draft(v).unwrap();
+        assert!(norm["partial"].is_object());
+        assert_eq!(norm["partial"]["mc_version"], json!("26.2"));
+    }
+
+    #[test]
+    fn partial字符串化且内容坏_报可执行错误() {
+        // v0.9.3 实测延伸：内层手写坏 JSON 时给出带原因的重交指令
+        let v = json!({"partial": "{\"mc_version\" \"26.2\"}"});
+        let err = normalize_draft(v).unwrap_err();
+        assert!(
+            err.contains("partial 字段被写成了字符串") && err.contains("最外层不要加引号"),
+            "拒绝信息应可执行：{err}"
+        );
+    }
+
+    #[test]
+    fn questions键名question别名规整() {
+        // v0.9.3 实测：模型把正文字段写成 question（schema 要求 text）
+        let v = json!({
+            "partial": {},
+            "questions": [{"topic": "cross_network", "question": "跨网络吗？"}]
+        });
+        let norm = normalize_draft(v).unwrap();
+        assert_eq!(norm["questions"][0]["text"], json!("跨网络吗？"));
+        assert_eq!(norm["questions"][0]["options"], json!([]));
     }
 
     #[tokio::test]

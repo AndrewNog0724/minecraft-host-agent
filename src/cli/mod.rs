@@ -120,20 +120,21 @@ async fn cmd_new(
 
     let task_id = uuid::Uuid::new_v4().to_string();
     let trace = TaskTrace::new(task_id.clone(), requirement.clone());
-    bus.publish(TraceEvent::TaskStarted {
-        trace: trace.clone(),
-    });
 
-    // 2. 事件泵（进度渲染 + 落盘 + 仓库备份）
+    // 2. 事件泵（进度渲染 + 落盘 + 仓库备份）。
+    // 必须先订阅再发布 TaskStarted：广播不可回放，顺序颠倒泵会错过首个事件（v0.9.3）。
+    let rx = bus.subscribe();
     let backup = crate::store::SessionBackup::open();
     println!(
         "会话备份：{}（随任务写入，便于提交分析）",
         backup.root().display()
     );
     let pump_store = store.clone();
-    let pump_bus = bus.clone();
     let pump_task = tokio::spawn(async move {
-        let _ = render::pump(pump_bus, pump_store, bars, backup).await;
+        let _ = render::pump(rx, pump_store, bars, backup).await;
+    });
+    bus.publish(TraceEvent::TaskStarted {
+        trace: trace.clone(),
     });
 
     // 3. LLM 需求理解环（不可用时引导走 plan 降级）
@@ -481,14 +482,14 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
 
     let task_id = uuid::Uuid::new_v4().to_string();
     let trace = TaskTrace::new(task_id.clone(), format!("手动方案 {}", spec.spec_id));
-    bus.publish(TraceEvent::TaskStarted { trace });
-    // 事件泵（进度渲染 + 落盘 + 仓库备份）
+    // 事件泵（进度渲染 + 落盘 + 仓库备份）；先订阅再发布（v0.9.3，同 cmd_new）
+    let rx = bus.subscribe();
     let backup = crate::store::SessionBackup::open();
     let pump_store = store.clone();
-    let pump_bus = bus.clone();
     tokio::spawn(async move {
-        let _ = render::pump(pump_bus, pump_store, bars, backup).await;
+        let _ = render::pump(rx, pump_store, bars, backup).await;
     });
+    bus.publish(TraceEvent::TaskStarted { trace });
     bus.publish(TraceEvent::SpecConfirmed {
         task_id: task_id.clone(),
         spec: Box::new(spec.clone()),
