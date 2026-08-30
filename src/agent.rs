@@ -411,6 +411,8 @@ impl<'a> RequirementAgent<'a> {
                         let value: serde_json::Value =
                             serde_json::from_str(call.function.arguments.trim())
                                 .map_err(|e| format!("参数不是合法 JSON：{e}"))?;
+                        // 交卷形状规整（v0.8.1 实测勘误，决议 D16）
+                        let value = normalize_draft(value);
                         // Schema 校验（schemars 派生 → jsonschema 校验，§8.3）
                         let schema = serde_json::to_value(schemars::schema_for!(ServerSpecDraft))
                             .map_err(|e| format!("内部 schema 错误：{e}"))?;
@@ -528,6 +530,53 @@ impl<'a> RequirementAgent<'a> {
     }
 }
 
+/// 模型交卷形状规整（决议 D16，v0.8.1 实测勘误）——在 schema 校验前执行：
+/// 1. 顶层直接平铺 PartialSpec 字段（缺 `partial` 包装）→ 包一层；
+/// 2. questions 元素缺 `options`（schema 必填）→ 默认空数组（自由文本问答）。
+///
+/// 两者都是确定性的形状归一，不臆造任何业务字段。
+fn normalize_draft(value: serde_json::Value) -> serde_json::Value {
+    const PARTIAL_FIELDS: &[&str] = &[
+        "spec_id",
+        "online_players",
+        "offline_players",
+        "account_kind",
+        "software",
+        "mc_version",
+        "mods",
+        "cross_network",
+        "machine_memory_mb",
+        "max_players",
+        "extra",
+    ];
+
+    let value = match &value {
+        serde_json::Value::Object(map)
+            if !map.contains_key("partial")
+                && PARTIAL_FIELDS.iter().any(|f| map.contains_key(*f)) =>
+        {
+            let mut map = map.clone();
+            let questions = map.remove("questions").unwrap_or(json!([]));
+            json!({ "partial": map, "questions": questions })
+        }
+        _ => value,
+    };
+
+    let mut value = value;
+    if let Some(questions) = value.get_mut("questions")
+        && let Some(items) = questions.as_array_mut()
+    {
+        for q in items.iter_mut() {
+            if let Some(obj) = q.as_object_mut()
+                && !obj.contains_key("options")
+            {
+                obj.insert("options".into(), json!([]));
+            }
+        }
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +687,64 @@ mod tests {
         let args = serde_json::json!({ "topic": "offline-auth" });
         let out = agent.execute_tool(&call, &args).await.unwrap();
         assert!(out["content"].as_str().unwrap().contains("离线"));
+    }
+
+    #[test]
+    fn 扁平交卷规整为partial包装() {
+        let flat = json!({"software":"vanilla","mc_version":"1.21.1","cross_network":null});
+        let norm = normalize_draft(flat);
+        assert!(norm["partial"].is_object());
+        assert_eq!(norm["questions"], json!([]));
+        assert_eq!(norm["partial"]["mc_version"], json!("1.21.1"));
+    }
+
+    #[test]
+    fn 正常包装交卷保持不变() {
+        let wrapped = json!({
+            "partial": {"mc_version": "1.21.1"},
+            "questions": [{"topic": "t", "text": "?", "options": ["a"]}]
+        });
+        assert_eq!(normalize_draft(wrapped.clone()), wrapped);
+    }
+
+    #[test]
+    fn questions缺options补空数组() {
+        let v = json!({"partial": {}, "questions": [{"topic": "t", "text": "?"}]});
+        assert_eq!(normalize_draft(v)["questions"][0]["options"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn 扁平交卷实测载荷回归() {
+        // v0.8.1 实测：模型以顶层平铺字段交卷（双重编码解包在 llm 层，见 llm 单测），
+        // agent 层须规整接收——用实测载荷（含 null 字段与幻觉版本号）回归。
+        let flat = json!({
+            "software": "vanilla",
+            "mc_version": "26.2",
+            "max_players": 6,
+            "cross_network": null,
+            "online_players": null,
+            "offline_players": null,
+            "account_kind": null,
+            "machine_memory_mb": null,
+            "extra": "Player said 5 friends"
+        });
+        let mut resp = resp_submit();
+        resp.tool_calls[0].function.arguments = flat.to_string();
+        let bus = EventBus::new();
+        let client = ScriptedClient::new(vec![resp]);
+        let svc = LlmService::with_client(
+            client,
+            "fake",
+            Decimal::ZERO,
+            Arc::new(crate::llm::SpendLedger::new()),
+            bus.clone(),
+        );
+        let deps =
+            AgentDeps::new(KnowledgeBase::embedded().unwrap(), AppConfig::default()).unwrap();
+        let agent = RequirementAgent::new(&svc, &deps, bus, "t4".into(), CancellationToken::new());
+        let (draft, _) = agent.run("hi").await.unwrap();
+        assert_eq!(draft.partial.mc_version.as_deref(), Some("26.2"));
+        assert_eq!(draft.partial.max_players, Some(6));
     }
 
     #[tokio::test]

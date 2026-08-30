@@ -404,10 +404,13 @@ impl OpenAiCompatClient {
         for builder in builders.into_iter().flatten() {
             let (arguments, strategy) = builder.finalize_arguments();
             if strategy != "incremental" {
-                notes.push(format!(
-                    "工具 {} 参数采用 {strategy} 策略取得",
-                    builder.name
-                ));
+                let what = match strategy {
+                    "unwrapped" => "为双重 JSON 编码字符串，已自动解包",
+                    "cumulative" => "为累积式分片，已取最后一片",
+                    "repaired" => "经控制字符修复后可用",
+                    _ => "无法解析，原样交由上层校验",
+                };
+                notes.push(format!("工具 {} 参数{what}", builder.name));
             }
             tool_calls.push(ToolCall {
                 id: builder.id,
@@ -447,14 +450,22 @@ impl ToolCallBuilder {
     }
 
     /// 双策略 + 兜底取得可用参数（决议 D16）：
-    /// 1. incremental：增量式分片拼接（OpenAI 标准），整串应为一个合法 JSON；
-    /// 2. cumulative：累积式上游每片携带完整 JSON，最后一片即成品；
-    /// 3. repaired：字符串字面量内混入裸控制字符时转义修复。
+    /// 1. unwrapped：模型偶发把参数双重 JSON 编码（整体是"内嵌 JSON 的字符串"，
+    ///    v0.8.1 实测确认的根因），先解出内层；
+    /// 2. incremental：增量式分片拼接（OpenAI 标准），整串应为一个合法 JSON；
+    /// 3. cumulative：累积式上游每片携带完整 JSON，最后一片即成品；
+    /// 4. repaired：字符串字面量内混入裸控制字符时转义修复。
     ///
     /// 全部失败时原样返回拼接串，让上层校验给出带原文的错误。
     fn finalize_arguments(&self) -> (String, &'static str) {
+        if let Some(inner) = unwrap_stringified(&self.acc) {
+            return (inner, "unwrapped");
+        }
         if is_valid_json(&self.acc) {
             return (self.acc.clone(), "incremental");
+        }
+        if let Some(inner) = unwrap_stringified(&self.last) {
+            return (inner, "unwrapped");
         }
         if is_valid_json(&self.last) {
             return (self.last.clone(), "cumulative");
@@ -470,6 +481,15 @@ impl ToolCallBuilder {
 /// 是否为单个合法 JSON 值（空白串视为非法）。
 fn is_valid_json(s: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(s).is_ok()
+}
+
+/// 若参数整体是"内嵌合法 JSON 的字符串"（模型双重编码，v0.8.1 实测勘误），
+/// 解出内层原文。仅解一层且要求内层是合法 JSON——普通字符串参数不受影响。
+fn unwrap_stringified(s: &str) -> Option<String> {
+    let outer: serde_json::Value = serde_json::from_str(s.trim()).ok()?;
+    let inner = outer.as_str()?;
+    serde_json::from_str::<serde_json::Value>(inner.trim()).ok()?;
+    Some(inner.trim().to_string())
 }
 
 /// 把字符串字面量内部的裸控制字符转义为合法转义序列（兜底修复，决议 D16）。
@@ -823,6 +843,26 @@ mod tests {
         let (args, strategy) = b.finalize_arguments();
         assert_eq!(strategy, "cumulative");
         assert_eq!(args, "{\"a\":123}");
+    }
+
+    #[test]
+    fn 参数策略_双重编码字符串解包() {
+        // v0.8.1 实测根因：参数整体是"字符串"，内嵌才是 JSON
+        let inner = r#"{"software":"vanilla","mc_version":"26.2"}"#;
+        let wire = serde_json::Value::String(inner.to_string()).to_string();
+        let b = builder(&wire, &wire);
+        let (args, strategy) = b.finalize_arguments();
+        assert_eq!(strategy, "unwrapped");
+        assert_eq!(args, inner);
+    }
+
+    #[test]
+    fn 参数策略_普通字符串参数不解包() {
+        // 内层不是合法 JSON → 保持原样，交由上层按语义处理
+        let b = builder(r#""hello""#, r#""hello""#);
+        let (args, strategy) = b.finalize_arguments();
+        assert_eq!(strategy, "incremental");
+        assert_eq!(args, r#""hello""#);
     }
 
     #[test]

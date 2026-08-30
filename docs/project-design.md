@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.8（活文档，持续迭代）
+- **版本**：v0.8.1（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -308,6 +308,7 @@ struct TaskTrace {
   1. **参数分片双策略拼装**：OpenAI 标准为增量式分片（逐片 `push_str`）；部分兼容层为累积式（每片携带完整 JSON）。流结束后先按增量式拼接校验，失败则改用最后一片单独校验——两种模式都能得到正确参数，并留痕实际命中的策略；
   2. **分片字段容错**：`DeltaToolCall.index` 允许缺省（`#[serde(default)]`）；无法解析的 SSE 块不再静默丢弃，计数 + warn 日志，含工具调用字段的块解析失败计入响应留痕；
   3. **截断与脏数据显式化**：`finish_reason=length` 直接报"输出被截断"而非伪装成 schema 校验失败；参数含非法控制字符时做一次字符串内转义修复作为兜底尝试。
+  4. **交卷形状规整（v0.8.1 实测定位真因）**：上述诊断留痕生效后确认真因——模型把参数**双重 JSON 编码**（整体是"内嵌 JSON 的字符串"，解析过、schema 校验才炸 `not of type "object"`）且**缺 `partial` 包装直接顶层平铺字段**。修复分层：llm 层对"字符串化参数"自动解包（内层须为合法 JSON，普通字符串参数不受影响）；agent 层 `normalize_draft` 在 schema 校验前把顶层平铺的 PartialSpec 字段包进 `partial`、questions 缺 `options` 补空数组——纯确定性形状归一，不臆造业务字段。传输层加固（1–3）保留为防御性基础设施。
 - 调用前后钩子：前查预算（`store` 累计值）；后生成 `UsageRecord` 入总线。思考模式、上下文长度从 `AppConfig` 透传（R3）。
 
 ### 8.4 knowledge：知识库与上游 API
@@ -604,4 +605,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.7 | 向导问答分层（FR-18 补充，决议 D14）：必填 3 项 + 高级选填段（回车即默认）；新增环境引导脚本设计（决议 D13，`scripts/bootstrap-windows.ps1` / `bootstrap.sh`）；仓库结构补 `scripts/` |
 | 2026-08-30 | v0.7.1 | Windows 实测勘误：`.ps1` 改存 UTF-8 with BOM，修复 Windows PowerShell 5.1 按 GBK 解码无 BOM 文件导致的连锁解析错误（§8.7 编码约束） |
 | 2026-08-30 | v0.8 | 首次真实 LLM 实测缺陷复盘（决议 D16/D17）：`submit_spec` 连续校验失败根因收敛与 SSE 解析加固（§8.2/§8.3，含诊断留痕、专用错误类型、失败会话落盘、五种 mock 形状回归）；需求理解阶段全程进度可视化与模型文本直显（§8.7，R4 合规补全） |
+| 2026-08-30 | v0.8.1 | 实测定位 submit_spec 校验失败真因（D16 第 4 条）：模型双重 JSON 编码参数 + 缺 `partial` 包装顶层平铺——llm 层字符串化解包、agent 层 `normalize_draft` 形状规整；实测载荷回归测试覆盖 |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |
