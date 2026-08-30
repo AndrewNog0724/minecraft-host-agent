@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.9.1（活文档，持续迭代）
+- **版本**：v0.9.2（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -388,7 +388,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 
 ### 8.7 store / config / ui
 
-- `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
+- `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。**仓库会话备份**（v0.9.2 调试设施）：`SessionBackup` 把任务轨迹 / 对话原文 / 事件流镜像到 `<仓库>/session-backups/<task_id>/`（`MCHA_BACKUP_DIR` 可改向），随任务实时写入、失败只 warn；与数据目录 `sessions/`、仓库既有 `sessions/`（基线实验材料）互不影响，临时入库便于协作排障，问题定位后移除。
 - `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；新增 `[workspace]` 段（FR-19）：`path` 为空 = 默认 `<数据目录>/profiles/`，否则服务端安装到 `<workspace>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **环境变量 `MCHA_WORKSPACE` > config.toml > 默认**；支持 `~` 展开与相对路径，加载时校验可写。
 - `ui`：clap 子命令（`new` / `plan` / `diag` / `profiles` / `sessions` / `config` / `usage` / `setup`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
   - **需求理解阶段全程可视化（决议 D17，v0.8 实测反馈：LLM 阶段零进度输出，构成 R4 合规缺口）**：
@@ -611,4 +611,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.8.1 | 实测定位 submit_spec 校验失败真因（D16 第 4 条）：模型双重 JSON 编码参数 + 缺 `partial` 包装顶层平铺——llm 层字符串化解包、agent 层 `normalize_draft` 形状规整；实测载荷回归测试覆盖 |
 | 2026-08-30 | v0.9 | 游戏版本体系适配年份制 + Java 需求动态化（§8.4/§8.8/§8.9/§12，官方 API 与 wiki 双源核实）：26.x 为 2026 年份制正式版、Java 21→25 分界在 26.1；`javaVersion.majorVersion` 升为 Java 需求事实源（L1 表降离线兜底并补 26.1→25），`check_version_compat` 与部署 preflight 同口径；`CompatReport.java_major_source` 标明口径；Modrinth 404=空结果语义化为 `NoCompatibleVersion` 并附最高支持版本；别名表全表复核修正（暮色森林/沉浸工程） |
 | 2026-08-30 | v0.9.1 | submit_spec 拒绝信息可执行化（D16 增补）：实测模型双重编码且内层手写坏 JSON（服务商仅校验外层字符串）、并把 probe 返回字段回填草案——agent 层识别 String 实例并给出"双重编码+内层错误位置+重交指令"的针对性拒绝信息；L4 提示词补参数硬约束（禁止双重编码/回填工具字段/大写布尔） |
+| 2026-08-30 | v0.9.2 | 仓库会话备份（调试设施）：`SessionBackup` 把轨迹/对话原文/事件流镜像到 `<仓库>/session-backups/<task_id>/`（`MCHA_BACKUP_DIR` 可改向），随任务实时写入、不 ignore、不影响主流程，供提交 git 协作排障（§8.7） |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

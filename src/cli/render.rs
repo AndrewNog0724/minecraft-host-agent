@@ -7,14 +7,16 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rust_decimal::Decimal;
 
 use crate::events::{AppEvent, EventBus, ProgressEvent, TaskStatus, TaskTrace, TraceEvent};
-use crate::store::Store;
+use crate::store::{SessionBackup, Store};
 
 /// 事件泵：订阅总线，驱动进度条 + 累积任务轨迹 + 写 usage/events 落盘。
+/// 同步镜像一份到仓库备份目录（v0.9.2 调试设施，备份失败只 warn 不影响主流程）。
 /// 泵在 TaskFinished 或通道关闭时退出。
 pub async fn pump(
     bus: EventBus,
     store: Arc<Store>,
     bars: MultiProgress,
+    backup: SessionBackup,
 ) -> Result<(), tokio::sync::broadcast::error::RecvError> {
     let mut rx = bus.subscribe();
     // step_id → 进度条
@@ -42,18 +44,25 @@ pub async fn pump(
             AppEvent::Trace(t) => match t {
                 TraceEvent::TaskStarted { trace: t0 } => {
                     let _ = store.save_trace(&t0);
+                    backup.save_trace(&t0);
                     trace = Some(t0);
                 }
                 TraceEvent::StepAdded { task_id, step } => {
                     if let Some(tr) = trace.as_mut() {
                         tr.steps.push(step);
                         let _ = store.save_trace(tr);
+                        backup.save_trace(tr);
                     } else {
                         let _ = store.append_event(&task_id, &serde_json::json!({"step": step}));
+                        backup.append_event(&task_id, &serde_json::json!({"step": step}));
                     }
                 }
                 TraceEvent::SpecDrafted { task_id, .. } => {
                     let _ = store.append_event(
+                        &task_id,
+                        &serde_json::json!({"event": "spec_drafted", "at": chrono::Local::now().to_rfc3339()}),
+                    );
+                    backup.append_event(
                         &task_id,
                         &serde_json::json!({"event": "spec_drafted", "at": chrono::Local::now().to_rfc3339()}),
                     );
@@ -67,14 +76,27 @@ pub async fn pump(
                             "at": chrono::Local::now().to_rfc3339(),
                         }),
                     );
+                    backup.append_event(
+                        &task_id,
+                        &serde_json::json!({
+                            "event": "spec_confirmed",
+                            "spec_id": spec.spec_id,
+                            "at": chrono::Local::now().to_rfc3339(),
+                        }),
+                    );
                 }
                 TraceEvent::TaskFinished { task_id, status } => {
                     if let Some(tr) = trace.as_mut() {
                         tr.status = status;
                         tr.finished_at = Some(chrono::Local::now());
                         let _ = store.save_trace(tr);
+                        backup.save_trace(tr);
                     }
                     let _ = store.append_event(
+                        &task_id,
+                        &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
+                    );
+                    backup.append_event(
                         &task_id,
                         &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
                     );
@@ -84,6 +106,7 @@ pub async fn pump(
                     // 对话原文留痕（决议 D16）：失败排障与 R5 查看共用
                     if let Ok(json) = serde_json::to_value(&messages) {
                         let _ = store.save_messages(&task_id, &json);
+                        backup.save_messages(&task_id, &json);
                     }
                 }
             },

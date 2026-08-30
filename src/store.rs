@@ -278,6 +278,81 @@ impl Store {
     }
 }
 
+/// 仓库内会话备份（v0.9.2 调试设施）：把任务轨迹 / 对话原文 / 事件流镜像到
+/// `<仓库>/session-backups/<task_id>/`，便于把故障现场整目录提交进 git 分析。
+/// 与数据目录 `~/.mcha/sessions/`、仓库既有的 `sessions/`（基线实验材料）互不影响。
+/// 备份是非关键路径：任何写入失败只 warn，不影响主流程。
+pub struct SessionBackup {
+    root: PathBuf,
+}
+
+impl SessionBackup {
+    /// 定位备份根目录：环境变量 `MCHA_BACKUP_DIR` 优先，
+    /// 否则用编译期仓库路径（pull → build → run 工作流下即仓库目录）。
+    pub fn open() -> Self {
+        let root = std::env::var_os("MCHA_BACKUP_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("session-backups"));
+        Self { root }
+    }
+
+    /// 根目录参数化（测试用）。
+    #[cfg(test)]
+    pub fn open_at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// 备份根目录（CLI 展示用）。
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    fn task_dir(&self, task_id: &str) -> PathBuf {
+        self.root.join(task_id)
+    }
+
+    /// 覆盖写一个文本文件（序列化失败也只 warn——备份不阻塞主流程）。
+    fn write(&self, task_id: &str, name: &str, content: String) {
+        let dir = self.task_dir(task_id);
+        let result =
+            std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(name), content));
+        if let Err(e) = result {
+            tracing::warn!("会话备份 {task_id}/{name} 写入失败（不影响主流程）：{e}");
+        }
+    }
+
+    /// 镜像任务轨迹（与 [`Store::save_trace`] 同构）。
+    pub fn save_trace(&self, trace: &TaskTrace) {
+        match serde_json::to_string_pretty(trace) {
+            Ok(json) => self.write(&trace.task_id, "trace.json", json),
+            Err(e) => tracing::warn!("会话备份轨迹序列化失败：{e}"),
+        }
+    }
+
+    /// 镜像对话原文（与 [`Store::save_messages`] 同构，messages 为已序列化 JSON）。
+    pub fn save_messages(&self, task_id: &str, messages: &serde_json::Value) {
+        match serde_json::to_string_pretty(messages) {
+            Ok(json) => self.write(task_id, "messages.json", json),
+            Err(e) => tracing::warn!("会话备份对话序列化失败：{e}"),
+        }
+    }
+
+    /// 镜像事件流追加（与 [`Store::append_event`] 同构，JSONL）。
+    pub fn append_event(&self, task_id: &str, event: &serde_json::Value) {
+        let dir = self.task_dir(task_id);
+        let result = std::fs::create_dir_all(&dir).and_then(|()| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("events.jsonl"))?;
+            writeln!(file, "{event}")
+        });
+        if let Err(e) = result {
+            tracing::warn!("会话备份 {task_id}/events.jsonl 追加失败（不影响主流程）：{e}");
+        }
+    }
+}
+
 /// 打码：把取值中疑似密钥/公网地址的字段替换为占位（NFR-2）。
 fn mask_value(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = value.as_object_mut() {
@@ -300,6 +375,31 @@ mod tests {
 
     fn sample_trace() -> TaskTrace {
         TaskTrace::new("task-1".to_string(), "测试任务")
+    }
+
+    #[test]
+    fn 会话备份镜像写入仓库目录() {
+        // v0.9.2：备份与数据目录 sessions/、仓库既有 sessions/ 互不影响
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = SessionBackup::open_at(tmp.path());
+        let trace = TaskTrace::new("t-bk".into(), "备份测试");
+        backup.save_trace(&trace);
+        backup.save_messages("t-bk", &serde_json::json!([{"role": "user"}]));
+        backup.append_event("t-bk", &serde_json::json!({"event": "x"}));
+        backup.append_event("t-bk", &serde_json::json!({"event": "y"}));
+
+        let dir = tmp.path().join("t-bk");
+        assert!(dir.join("trace.json").is_file());
+        let trace_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("trace.json")).unwrap())
+                .unwrap();
+        assert_eq!(trace_json["task_id"], "t-bk");
+        let msgs: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("messages.json")).unwrap())
+                .unwrap();
+        assert_eq!(msgs[0]["role"], "user");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert_eq!(events.lines().count(), 2, "events.jsonl 应为追加式两行");
     }
 
     fn sample_usage() -> UsageRecord {
