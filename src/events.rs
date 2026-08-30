@@ -37,6 +37,9 @@ pub enum ProgressEvent {
         ok: bool,
         detail: Option<String>,
     },
+    /// 面向用户的直显消息（模型澄清文本、待确认问题等，决议 D17）。
+    /// 渲染层经 MultiProgress::println 原样打印，不进进度条。
+    Notice { task_id: TaskId, text: String },
 }
 
 /// LLM 调用阶段（R6 按阶段汇总用）。
@@ -150,6 +153,11 @@ pub enum TraceEvent {
     TaskFinished {
         task_id: TaskId,
         status: TaskStatus,
+    },
+    /// 需求理解环的完整对话消息（决议 D16：失败留痕；成功也落盘供 R5 查看）。
+    SessionMessages {
+        task_id: TaskId,
+        messages: Vec<crate::llm::ChatMessage>,
     },
 }
 

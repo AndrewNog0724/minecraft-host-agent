@@ -32,7 +32,12 @@ pub async fn pump(
             AppEvent::Progress(p) => handle_progress(&bars, &mut step_bars, &p),
             AppEvent::Usage(u) => {
                 let _ = store.append_usage(&u);
-                cost_bar.set_message(format!("本次费用：¥{:.4}", ledger_display(&store)));
+                cost_bar.set_message(format!(
+                    "本次费用：¥{:.4}（上次调用 in {} / out {} tok）",
+                    ledger_display(&store),
+                    u.input_tokens,
+                    u.output_tokens
+                ));
             }
             AppEvent::Trace(t) => match t {
                 TraceEvent::TaskStarted { trace: t0 } => {
@@ -74,6 +79,12 @@ pub async fn pump(
                         &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
                     );
                     return Ok(());
+                }
+                TraceEvent::SessionMessages { task_id, messages } => {
+                    // 对话原文留痕（决议 D16）：失败排障与 R5 查看共用
+                    if let Ok(json) = serde_json::to_value(&messages) {
+                        let _ = store.save_messages(&task_id, &json);
+                    }
                 }
             },
         }
@@ -139,6 +150,10 @@ fn handle_progress(
                 let mark = if *ok { "✔" } else { "✘" };
                 bar.finish_with_message(format!("{mark} {}", detail.clone().unwrap_or_default()));
             }
+        }
+        ProgressEvent::Notice { text, .. } => {
+            // 直显消息（模型澄清文本等）：挂起进度条原样打印，避免交错（决议 D17）
+            let _ = bars.println(text);
         }
     }
 }

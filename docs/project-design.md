@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.5（活文档，持续迭代）
+- **版本**：v0.8（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -296,6 +296,7 @@ struct TaskTrace {
 - 循环（对应课程 agent-architecture.md 第五节）：发送消息（含工具声明）→ 解析回复 → `tool_calls` 则校验参数 JSON Schema → 执行 → 结果以 tool 消息回传 → 继续；最终提案文本则解析为 `ServerSpecDraft` 结束。停止条件：最终产出 / 最大轮数（默认 8）/ 用户取消 / 预算守卫拒绝。
 - 工具集（需求理解环，全部只读无副作用）：`probe_environment()`、`check_version_compat(mc, software?, java?)`、`search_mods(query)`、`resolve_mod(name, mc, loader)`、`load_guide(topic)`（Skills 式按需注入领域指南，见 §8.9）。
 - **提案提交走 tool-calling**（决议 D6）：把"提交方案"本身声明为一个工具 `submit_spec(ServerSpecDraft)`，强制模型以结构化参数交卷，与课程讲解的工具调用机制一致；普通文本只用于澄清问答。
+- **submit_spec 校验失败必须留痕**（决议 D16）：校验失败的具体原因与原始参数（截断至 300 字符）同时回传模型、打印到终端进度条、写入 TraceStep.detail；重试上限（≤2）达到后的失败不再冒用 llm 层错误文案，改用专用错误 `AgentError::SpecSubmitFailed`；任务失败时把完整对话 messages 落盘为 `sessions/<task_id>.messages.json`（R5"非黑盒"对失败场景同样成立）。普通工具的参数 JSON 解析失败不允许静默按空参数继续（至少 warn 留痕）。
 - 系统提示词（L4，需求理解环与诊断环各一套，见 §8.9）声明角色边界："你是需求分析师，不得虚构版本号，未知信息调用工具或提问"；版本类事实不进 Prompt（设计红线，见 §8.9）。
 - 诊断环（P1）工具：`read_log(path, tail_n)`、`get_server_spec()`、`probe_network(port)`、`load_guide(topic)`；产出 `Diagnosis{root_cause, evidence, fix: Vec<Action>, risk}`。
 
@@ -303,6 +304,10 @@ struct TaskTrace {
 
 - 自研薄客户端（reqwest + SSE 流式解析），不引入 LLM SDK——核心调用编排即课程考察点（R1），且代码量小、答辩可解释。
 - 结构化输出：工具参数 Schema 由 schemars 从类型派生 → 响应校验失败携错误重试（≤2）→ 仍失败降级逐项问答。
+- **SSE 工具参数解析加固（决议 D16，v0.8 首次实测缺陷复盘）**：首次实测中 `submit_spec` 连续校验失败（`finish_reason=tool_calls` 排除输出截断；控制台编码经英文输入复测排除）。根因候选收敛为三类上游分片差异，修复面与根因解耦，全部落地：
+  1. **参数分片双策略拼装**：OpenAI 标准为增量式分片（逐片 `push_str`）；部分兼容层为累积式（每片携带完整 JSON）。流结束后先按增量式拼接校验，失败则改用最后一片单独校验——两种模式都能得到正确参数，并留痕实际命中的策略；
+  2. **分片字段容错**：`DeltaToolCall.index` 允许缺省（`#[serde(default)]`）；无法解析的 SSE 块不再静默丢弃，计数 + warn 日志，含工具调用字段的块解析失败计入响应留痕；
+  3. **截断与脏数据显式化**：`finish_reason=length` 直接报"输出被截断"而非伪装成 schema 校验失败；参数含非法控制字符时做一次字符串内转义修复作为兜底尝试。
 - 调用前后钩子：前查预算（`store` 累计值）；后生成 `UsageRecord` 入总线。思考模式、上下文长度从 `AppConfig` 透传（R3）。
 
 ### 8.4 knowledge：知识库与上游 API
@@ -384,6 +389,11 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 - `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
 - `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；新增 `[workspace]` 段（FR-19）：`path` 为空 = 默认 `<数据目录>/profiles/`，否则服务端安装到 `<workspace>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **环境变量 `MCHA_WORKSPACE` > config.toml > 默认**；支持 `~` 展开与相对路径，加载时校验可写。
 - `ui`：clap 子命令（`new` / `plan` / `diag` / `profiles` / `sessions` / `config` / `usage` / `setup`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
+  - **需求理解阶段全程可视化（决议 D17，v0.8 实测反馈：LLM 阶段零进度输出，构成 R4 合规缺口）**：
+    - agent 循环发布进度事件：进入需求理解 `StepStarted("需求理解中…")`；每轮 `StepProgress`（"第 N 轮：正在调用 check_version_compat / search_mods…"，含工具名）；交卷成功 `StepFinished("已收到方案草案")`——部署阶段已有的 ProgressEvent 机制直接复用，渲染泵不变；
+    - **模型自然语言输出直显**：`tool_calls` 为空轮的澄清文本打印到终端（当前实现只回传模型、用户不可见）；交卷后展示模型 questions 摘要；
+    - **流式活动反馈**：SSE 消费中周期性上报"思考中…/已收 N 字"（思考模式下单次调用常超 30 秒，轮级粒度不够，这是 R4"实时渲染进度"在 LLM 阶段的正确落点）；
+    - 费用行随 Usage 事件同时显示当次输入/输出 token 数。
   - `mcha setup`（FR-18，决议 D12/D14）：一站式上手向导。问答**两段式**：
     - **必填段**（不可跳过，缺项循环重问）：endpoint（预设快捷项：GLM bigmodel / DeepSeek / 自定义输入）→ 模型名 → API Key（隐藏输入，直写 `.env`）；每项配一行中文说明，不懂技术细节也能照着服务商控制台填。
     - **选填段**（先问"是否配置高级选项？"，默认否）：上下文长度 / 思考模式 / 请求超时 / 预算上限 / 代理 / Adoptium 镜像 / 工作区路径，逐项显示默认值，**回车 = 采用默认**。
@@ -446,7 +456,7 @@ enum JavaRuntime {
 | R1 Rust 主控 | 副作用不出 Rust（原则 1）；LLM 仅经自研 `llm` 客户端调用；全部编排、校验、执行在 Rust 单二进制内 |
 | R2 界面 | CLI/TUI（clap + dialoguer + indicatif）；P2 视进度以 axum + SSE 增只读 Web 状态页 |
 | R3 模型配置 | `config.toml` 的 `[model]`（endpoint / model / context_len / thinking）与 `[[prices]]` + 内置价格预设 + `.env` 的 key；`config set` 子命令改写 |
-| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新；Ctrl-C → CancellationToken → 流水线步骤间检查点 + 进程 Drop 守卫 |
+| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新（含需求理解阶段轮次/工具/流式反馈，决议 D17）；Ctrl-C → CancellationToken → 流水线步骤间检查点 + 进程 Drop 守卫 |
 | R5 历史管理 | `profiles/`（ServerSpec+产物清单）、`sessions/`（TaskTrace 完整轨迹）、`usage/`；`sessions list/show/export` 查看、导出、导入 |
 | R6 用量统计 | `UsageRecord` 强制生成 + 价格换算；`usage` 按任务 / 阶段汇总；预算守卫调用前拦截，超限取消任务 |
 
@@ -495,7 +505,7 @@ enum JavaRuntime {
 ## 13. 测试与验收策略
 
 - 单元：决策树节点（输入 → Spec 增量）、版本校验管线（含"26.2"拒绝、依赖闭包）、模式库正则、JVM 参数推导、Java 供给的版本解析与路径规则。
-- 集成：`LlmClient` trait + Fake 实现（脚本化回复）驱动需求理解环全流程，CI 不花真钱。
+- 集成：`LlmClient` trait + Fake 实现（脚本化回复）驱动需求理解环全流程，CI 不花真钱；**SSE 解析形状回归**（决议 D16）：mock 字节流覆盖五种上游形状——增量式分片、累积式分片、分片缺 `index`、usage 块缺 `choices`、`finish_reason=length` 半截参数——逐一断言解析结果或错误文案。
 - 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
 
@@ -593,4 +603,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.6 | 首次实测反馈迭代（FR-18/19，决议 D11/D12）：新增 `agent setup` 上手向导与 `config wizard` 交互配置；新增 `[workspace]` 可配置工作区；风险表新增 Windows 实测项；AGENTS.md 固化"文档先行"全局迭代规则 |
 | 2026-08-30 | v0.7 | 向导问答分层（FR-18 补充，决议 D14）：必填 3 项 + 高级选填段（回车即默认）；新增环境引导脚本设计（决议 D13，`scripts/bootstrap-windows.ps1` / `bootstrap.sh`）；仓库结构补 `scripts/` |
 | 2026-08-30 | v0.7.1 | Windows 实测勘误：`.ps1` 改存 UTF-8 with BOM，修复 Windows PowerShell 5.1 按 GBK 解码无 BOM 文件导致的连锁解析错误（§8.7 编码约束） |
+| 2026-08-30 | v0.8 | 首次真实 LLM 实测缺陷复盘（决议 D16/D17）：`submit_spec` 连续校验失败根因收敛与 SSE 解析加固（§8.2/§8.3，含诊断留痕、专用错误类型、失败会话落盘、五种 mock 形状回归）；需求理解阶段全程进度可视化与模型文本直显（§8.7，R4 合规补全） |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

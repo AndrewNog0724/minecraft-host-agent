@@ -145,6 +145,25 @@ impl Store {
         Ok(path)
     }
 
+    /// 保存需求理解环的完整对话消息（决议 D16：messages 为已序列化的 JSON 数组，
+    /// 失败留痕与成功归档共用；R5"非黑盒"的对话原文层）。
+    pub fn save_messages(
+        &self,
+        task_id: &str,
+        messages: &serde_json::Value,
+    ) -> Result<PathBuf, StoreError> {
+        let path = self.sessions_dir().join(format!("{task_id}.messages.json"));
+        let json = serde_json::to_string_pretty(messages).map_err(|source| StoreError::Parse {
+            path: path.clone(),
+            source,
+        })?;
+        std::fs::write(&path, json).map_err(|source| StoreError::Write {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(path)
+    }
+
     /// 追加一行事件到该任务的 events.jsonl（进度/用量原文留痕）。
     pub fn append_event(&self, task_id: &str, event: &serde_json::Value) -> Result<(), StoreError> {
         let path = self.sessions_dir().join(format!("{task_id}.events.jsonl"));

@@ -45,6 +45,8 @@ const MAX_SCHEMA_RETRIES: usize = 2;
 pub enum AgentError {
     #[error("{0}")]
     Llm(#[from] LlmError),
+    #[error("结构化输出连续校验失败（最后一次：{last_error}）；可改用 `mcha plan` 手动填写方案")]
+    SpecSubmitFailed { last_error: String },
     #[error("达到最大轮数（{0}）仍未交卷；请换一种描述再试或直接使用 `plan` 命令手填")]
     MaxRounds(usize),
     #[error("任务已取消")]
@@ -180,9 +182,12 @@ impl<'a> RequirementAgent<'a> {
 
     /// 执行一次工具调用。返回要回传给模型的内容（JSON 字符串）。
     /// 提交类工具（submit_spec）在此只做校验，交卷由循环层识别处理。
-    async fn execute_tool(&self, call: &ToolCall) -> Result<serde_json::Value, String> {
-        let args: serde_json::Value =
-            serde_json::from_str(call.function.arguments.trim()).unwrap_or(json!({}));
+    /// `args` 由调用方解析（决议 D16：解析失败在循环层留痕，不静默兜底）。
+    async fn execute_tool(
+        &self,
+        call: &ToolCall,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         match call.function.name.as_str() {
             "probe_environment" => {
                 let report = java::probe_environment_report().await;
@@ -252,7 +257,58 @@ impl<'a> RequirementAgent<'a> {
     }
 
     /// 需求理解主循环：返回解析后的草案与对话消息（供 R5 会话落盘）。
+    /// 外层负责进度条生命周期（R4/D17），内层 `run_inner` 承载循环本体。
     pub async fn run(
+        &self,
+        user_input: &str,
+    ) -> Result<(ServerSpecDraft, Vec<ChatMessage>), AgentError> {
+        self.bus.publish(crate::events::ProgressEvent::StepStarted {
+            task_id: self.task_id.clone(),
+            step: "requirement".into(),
+            title: format!("需求理解中（{}）…", self.deps.cfg.model.model),
+        });
+        let result = self.run_inner(user_input).await;
+        let (ok, detail) = match &result {
+            Ok((draft, _)) => (
+                true,
+                Some(format!(
+                    "已收到方案草案（{} 个问题）",
+                    draft.questions.len()
+                )),
+            ),
+            Err(e) => (false, Some(format!("需求理解失败：{e}"))),
+        };
+        self.bus
+            .publish(crate::events::ProgressEvent::StepFinished {
+                task_id: self.task_id.clone(),
+                step: "requirement".into(),
+                ok,
+                detail,
+            });
+        result
+    }
+
+    /// 流式活动钩子（R4/D17）：接收增量满 200 字上报一次，避免刷爆事件总线。
+    fn stream_tick(&self) -> crate::llm::StreamTick {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let bus = self.bus.clone();
+        let task_id = self.task_id.clone();
+        let last = AtomicU64::new(0);
+        std::sync::Arc::new(move |received| {
+            let prev = last.swap(received, Ordering::Relaxed);
+            if received - prev >= 200 {
+                bus.publish(crate::events::ProgressEvent::StepProgress {
+                    task_id: task_id.clone(),
+                    step: "requirement".into(),
+                    current: received,
+                    total: None,
+                    detail: Some(format!("思考中…已接收 {received} 字")),
+                });
+            }
+        })
+    }
+
+    async fn run_inner(
         &self,
         user_input: &str,
     ) -> Result<(ServerSpecDraft, Vec<ChatMessage>), AgentError> {
@@ -262,6 +318,7 @@ impl<'a> RequirementAgent<'a> {
         ];
         let tools = self.tool_decls();
         let mut schema_failures = 0;
+        let tick = self.stream_tick();
 
         for round in 1..=MAX_ROUNDS {
             if self.cancel.is_cancelled() {
@@ -277,10 +334,11 @@ impl<'a> RequirementAgent<'a> {
                     &tools,
                     self.cancel.clone(),
                     rate,
+                    Some(tick.clone()),
                 )
                 .await?;
 
-            // R5 留痕：一轮一次 TraceStep
+            // R5 留痕：一轮一次 TraceStep（含 D16 解析留痕）
             self.bus.publish(crate::events::TraceEvent::StepAdded {
                 task_id: self.task_id.clone(),
                 step: TraceStep {
@@ -292,9 +350,38 @@ impl<'a> RequirementAgent<'a> {
                     ),
                     usage_refs: vec![],
                     at: chrono::Local::now(),
-                    detail: Some(json!({ "finish_reason": resp.finish_reason })),
+                    detail: Some(json!({
+                        "finish_reason": resp.finish_reason,
+                        "notes": resp.notes,
+                    })),
                 },
             });
+
+            // 进度与直显（R4/D17）：本轮在做什么、模型说了什么
+            let tool_names: Vec<&str> = resp
+                .tool_calls
+                .iter()
+                .map(|c| c.function.name.as_str())
+                .collect();
+            if tool_names.is_empty() && !resp.content.trim().is_empty() {
+                self.bus.publish(crate::events::ProgressEvent::Notice {
+                    task_id: self.task_id.clone(),
+                    text: format!("开服管家：{}", resp.content.trim()),
+                });
+            }
+            let round_detail = if tool_names.is_empty() {
+                format!("第 {round} 轮：模型输出澄清文本")
+            } else {
+                format!("第 {round} 轮：调用 {}", tool_names.join("、"))
+            };
+            self.bus
+                .publish(crate::events::ProgressEvent::StepProgress {
+                    task_id: self.task_id.clone(),
+                    step: "requirement".into(),
+                    current: round as u64,
+                    total: None,
+                    detail: Some(round_detail),
+                });
 
             if resp.tool_calls.is_empty() {
                 // 模型只回了文本：把它当澄清话术展示，同时提醒其交卷
@@ -339,6 +426,32 @@ impl<'a> RequirementAgent<'a> {
                         }
                         Err(err) => {
                             schema_failures += 1;
+                            // 校验失败三处留痕（决议 D16）：
+                            // 模型可修正、终端可见（进度条详情）、轨迹可查（含原始参数头）
+                            let args_head: String =
+                                call.function.arguments.chars().take(300).collect();
+                            self.bus.publish(crate::events::TraceEvent::StepAdded {
+                                task_id: self.task_id.clone(),
+                                step: TraceStep {
+                                    kind: TraceKind::Tool,
+                                    summary: format!(
+                                        "submit_spec 第 {schema_failures} 次校验失败：{err}"
+                                    ),
+                                    usage_refs: vec![],
+                                    at: chrono::Local::now(),
+                                    detail: Some(json!({ "args_head": args_head })),
+                                },
+                            });
+                            self.bus
+                                .publish(crate::events::ProgressEvent::StepProgress {
+                                    task_id: self.task_id.clone(),
+                                    step: "requirement".into(),
+                                    current: schema_failures as u64,
+                                    total: None,
+                                    detail: Some(format!(
+                                        "参数校验失败（第 {schema_failures} 次）：{err}"
+                                    )),
+                                });
                             new_messages.push(ChatMessage::tool(
                                 &call.id,
                                 format!("提交被拒绝：{err}。请修正后重新提交。"),
@@ -346,7 +459,25 @@ impl<'a> RequirementAgent<'a> {
                         }
                     }
                 } else {
-                    let result = self.execute_tool(call).await;
+                    // 参数解析失败不允许静默按空参数执行（决议 D16）：warn 留痕
+                    let args = match serde_json::from_str::<serde_json::Value>(
+                        call.function.arguments.trim(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                "工具 {} 参数解析失败（按空参数执行）：{e}；原文头 200 字：{}",
+                                call.function.name,
+                                call.function
+                                    .arguments
+                                    .chars()
+                                    .take(200)
+                                    .collect::<String>()
+                            );
+                            json!({})
+                        }
+                    };
+                    let result = self.execute_tool(call, &args).await;
                     let payload = match result {
                         Ok(v) => serde_json::to_string(&v).unwrap_or_else(|_| "{}".into()),
                         Err(e) => json!({ "error": e }).to_string(),
@@ -357,15 +488,42 @@ impl<'a> RequirementAgent<'a> {
             messages.extend(new_messages);
 
             if let Some(draft) = submitted {
+                // 模型标注的待确认问题摘要直显（决议 D17；后续问答由决策树驱动）
+                if !draft.questions.is_empty() {
+                    let heads: Vec<String> = draft
+                        .questions
+                        .iter()
+                        .take(3)
+                        .map(|q| q.text.clone())
+                        .collect();
+                    self.bus.publish(crate::events::ProgressEvent::Notice {
+                        task_id: self.task_id.clone(),
+                        text: format!("模型提示待确认：{}", heads.join("；")),
+                    });
+                }
+                self.bus
+                    .publish(crate::events::TraceEvent::SessionMessages {
+                        task_id: self.task_id.clone(),
+                        messages: messages.clone(),
+                    });
                 return Ok((draft, messages));
             }
             if schema_failures > MAX_SCHEMA_RETRIES {
-                // 降级：放弃结构化提交，转为逐项问答（§8.3）
-                return Err(AgentError::Llm(LlmError::Stream(
-                    "结构化输出连续校验失败，请改用手动方案输入（plan 命令）".into(),
-                )));
+                // 降级：放弃结构化提交，转为逐项问答（§8.3）；留痕后再失败退出（决议 D16）
+                let last_error = format!("共 {schema_failures} 次未通过校验");
+                self.bus
+                    .publish(crate::events::TraceEvent::SessionMessages {
+                        task_id: self.task_id.clone(),
+                        messages: messages.clone(),
+                    });
+                return Err(AgentError::SpecSubmitFailed { last_error });
             }
         }
+        self.bus
+            .publish(crate::events::TraceEvent::SessionMessages {
+                task_id: self.task_id.clone(),
+                messages: messages.clone(),
+            });
         Err(AgentError::MaxRounds(MAX_ROUNDS))
     }
 }
@@ -398,6 +556,7 @@ mod tests {
             _messages: &[ChatMessage],
             _tools: &[ToolDecl],
             _cancel: CancellationToken,
+            _on_tick: Option<crate::llm::StreamTick>,
         ) -> Result<LlmResponse, LlmError> {
             let mut guard = self.calls.lock().unwrap();
             guard
@@ -412,6 +571,7 @@ mod tests {
             tool_calls: vec![],
             usage: Usage::default(),
             finish_reason: Some("stop".into()),
+            notes: vec![],
         }
     }
 
@@ -432,6 +592,7 @@ mod tests {
             }],
             usage: Usage::default(),
             finish_reason: Some("tool_calls".into()),
+            notes: vec![],
         }
     }
 
@@ -474,7 +635,8 @@ mod tests {
                 arguments: r#"{"topic": "offline-auth"}"#.into(),
             },
         };
-        let out = agent.execute_tool(&call).await.unwrap();
+        let args = serde_json::json!({ "topic": "offline-auth" });
+        let out = agent.execute_tool(&call, &args).await.unwrap();
         assert!(out["content"].as_str().unwrap().contains("离线"));
     }
 
