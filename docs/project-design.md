@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.9.3（活文档，持续迭代）
+- **版本**：v0.9.4（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -613,4 +613,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.9.1 | submit_spec 拒绝信息可执行化（D16 增补）：实测模型双重编码且内层手写坏 JSON（服务商仅校验外层字符串）、并把 probe 返回字段回填草案——agent 层识别 String 实例并给出"双重编码+内层错误位置+重交指令"的针对性拒绝信息；L4 提示词补参数硬约束（禁止双重编码/回填工具字段/大写布尔） |
 | 2026-08-30 | v0.9.2 | 仓库会话备份（调试设施）：`SessionBackup` 把轨迹/对话原文/事件流镜像到 `<仓库>/session-backups/<task_id>/`（`MCHA_BACKUP_DIR` 可改向），随任务实时写入、不 ignore、不影响主流程，供提交 git 协作排障（§8.7） |
 | 2026-08-30 | v0.9.3 | 依据 session-backups 实测现场修复三类缺陷（D16 增补）：① `partial` 字段字符串化——`normalize_draft` 下探解包（内层坏 JSON 报可执行错误）；② questions 键名 `question`→规范名 `text` 的确定性别名 + L4 提示词补正确形状示例；③ 事件总线"先发后订"缺陷——TaskStarted 在泵订阅前发布导致 trace 永不落盘，改为调用方先 `subscribe` 再 `spawn`/`publish`（cmd_new/cmd_plan 同修）；LLM 级失败/取消路径也落盘对话（messages.json 对所有退出路径可用） |
+| 2026-08-30 | v0.9.4 | R6 展示勘误："本次费用"进度条此前误用终身账本（`read_usage()` 全量求和，跨运行递增）；改为事件泵内本地累计本次运行费用，终身账本仅保留给 `mcha usage` 总账命令，两套口径分离 |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

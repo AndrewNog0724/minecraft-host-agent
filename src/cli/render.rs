@@ -24,7 +24,9 @@ pub async fn pump(
     let mut step_bars: HashMap<String, ProgressBar> = HashMap::new();
     // 任务轨迹由泵持有并落盘（R5 的"非黑盒"主体）
     let mut trace: Option<TaskTrace> = None;
-    // 本次会话累计费用展示
+    // 本次会话累计费用展示（泵内本地累计；落盘账本 read_usage 是跨任务终身账，
+    // 供 `mcha usage` 查总账，不能拿来当"本次"展示——v0.9.4 勘误）
+    let mut session_cost = Decimal::ZERO;
     let cost_bar = bars.add(ProgressBar::new_spinner());
     cost_bar.set_style(spinner_style());
     cost_bar.set_message("本次费用：¥0");
@@ -35,11 +37,10 @@ pub async fn pump(
             AppEvent::Progress(p) => handle_progress(&bars, &mut step_bars, &p),
             AppEvent::Usage(u) => {
                 let _ = store.append_usage(&u);
+                session_cost += u.cost;
                 cost_bar.set_message(format!(
-                    "本次费用：¥{:.4}（上次调用 in {} / out {} tok）",
-                    ledger_display(&store),
-                    u.input_tokens,
-                    u.output_tokens
+                    "本次费用：¥{session_cost:.4}（上次调用 in {} / out {} tok）",
+                    u.input_tokens, u.output_tokens
                 ));
             }
             AppEvent::Trace(t) => match t {
@@ -113,12 +114,6 @@ pub async fn pump(
             },
         }
     }
-}
-
-/// 全局用量累计（从 usage 落盘文件读取，跨任务累计）。
-fn ledger_display(store: &Store) -> String {
-    let total: Decimal = store.read_usage().iter().map(|r| r.cost).sum();
-    format!("{:.4}", total)
 }
 
 /// 模板样式：模板为编译期常量，解析失败时退回内置样式（不 panic）。
