@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.9（活文档，持续迭代）
+- **版本**：v0.9.1（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -297,6 +297,7 @@ struct TaskTrace {
 - 工具集（需求理解环，全部只读无副作用）：`probe_environment()`、`check_version_compat(mc, software?, java?)`、`search_mods(query)`、`resolve_mod(name, mc, loader)`、`load_guide(topic)`（Skills 式按需注入领域指南，见 §8.9）。
 - **提案提交走 tool-calling**（决议 D6）：把"提交方案"本身声明为一个工具 `submit_spec(ServerSpecDraft)`，强制模型以结构化参数交卷，与课程讲解的工具调用机制一致；普通文本只用于澄清问答。
 - **submit_spec 校验失败必须留痕**（决议 D16）：校验失败的具体原因与原始参数（截断至 300 字符）同时回传模型、打印到终端进度条、写入 TraceStep.detail；重试上限（≤2）达到后的失败不再冒用 llm 层错误文案，改用专用错误 `AgentError::SpecSubmitFailed`；任务失败时把完整对话 messages 落盘为 `sessions/<task_id>.messages.json`（R5"非黑盒"对失败场景同样成立）。普通工具的参数 JSON 解析失败不允许静默按空参数继续（至少 warn 留痕）。
+- **submit_spec 拒绝信息必须可执行**（D16 增补，v0.9.1 实测）：参数整体是 JSON 字符串（双重编码）且**内层手写坏 JSON**（服务商只校验外层字符串、内层无任何校验，模型会写出缺冒号/缺值/大写 `False` 等）时，schema 层只会报"not of type object"——模型无法自查。拒绝信息必须点名"双重编码 + 内层语法错误位置 + 重交指令（对象本体、只含 partial/questions、小写布尔、不回填工具返回字段）"。配套把同样的硬约束写进 L4 系统提示词（§8.9）：机器环境字段（machine_os 等）仅供分析，禁止回填草案。
 - 系统提示词（L4，需求理解环与诊断环各一套，见 §8.9）声明角色边界："你是需求分析师，不得虚构版本号，未知信息调用工具或提问"；版本类事实不进 Prompt（设计红线，见 §8.9）。
 - 诊断环（P1）工具：`read_log(path, tail_n)`、`get_server_spec()`、`probe_network(port)`、`load_guide(topic)`；产出 `Diagnosis{root_cause, evidence, fix: Vec<Action>, risk}`。
 
@@ -609,4 +610,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.8 | 首次真实 LLM 实测缺陷复盘（决议 D16/D17）：`submit_spec` 连续校验失败根因收敛与 SSE 解析加固（§8.2/§8.3，含诊断留痕、专用错误类型、失败会话落盘、五种 mock 形状回归）；需求理解阶段全程进度可视化与模型文本直显（§8.7，R4 合规补全） |
 | 2026-08-30 | v0.8.1 | 实测定位 submit_spec 校验失败真因（D16 第 4 条）：模型双重 JSON 编码参数 + 缺 `partial` 包装顶层平铺——llm 层字符串化解包、agent 层 `normalize_draft` 形状规整；实测载荷回归测试覆盖 |
 | 2026-08-30 | v0.9 | 游戏版本体系适配年份制 + Java 需求动态化（§8.4/§8.8/§8.9/§12，官方 API 与 wiki 双源核实）：26.x 为 2026 年份制正式版、Java 21→25 分界在 26.1；`javaVersion.majorVersion` 升为 Java 需求事实源（L1 表降离线兜底并补 26.1→25），`check_version_compat` 与部署 preflight 同口径；`CompatReport.java_major_source` 标明口径；Modrinth 404=空结果语义化为 `NoCompatibleVersion` 并附最高支持版本；别名表全表复核修正（暮色森林/沉浸工程） |
+| 2026-08-30 | v0.9.1 | submit_spec 拒绝信息可执行化（D16 增补）：实测模型双重编码且内层手写坏 JSON（服务商仅校验外层字符串）、并把 probe 返回字段回填草案——agent 层识别 String 实例并给出"双重编码+内层错误位置+重交指令"的针对性拒绝信息；L4 提示词补参数硬约束（禁止双重编码/回填工具字段/大写布尔） |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

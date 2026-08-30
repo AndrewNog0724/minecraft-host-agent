@@ -432,6 +432,27 @@ impl<'a> RequirementAgent<'a> {
                         let value: serde_json::Value =
                             serde_json::from_str(call.function.arguments.trim())
                                 .map_err(|e| format!("参数不是合法 JSON：{e}"))?;
+                        // v0.9.1：参数整体是 JSON 字符串 = 双重编码。服务商只校验外层
+                        // 字符串、内层无任何校验，模型常在字符串里手写坏 JSON——
+                        // 此时 schema 只会报"not of type object"，模型无法自查，
+                        // 必须给出可执行的重交指令（内层合法的情形已由 llm 层解包）。
+                        let value = match value {
+                            serde_json::Value::String(inner) => {
+                                match serde_json::from_str::<serde_json::Value>(inner.trim()) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        let head: String = inner.chars().take(120).collect();
+                                        return Err(format!(
+                                            "参数被整体写成了一个 JSON 字符串（双重编码），且字符串内容不是合法 JSON：{e}。\
+                                             请重新调用 submit_spec：arguments 直接写 JSON 对象本体，最外层不要加引号；\
+                                             顶层只含 partial 与 questions 两个键；布尔用小写 true/false，不要漏冒号漏值；\
+                                             不要包含 machine_os 等工具返回字段。你上一次的参数开头：{head}"
+                                        ));
+                                    }
+                                }
+                            }
+                            other => other,
+                        };
                         // 交卷形状规整（v0.8.1 实测勘误，决议 D16）
                         let value = normalize_draft(value);
                         // Schema 校验（schemars 派生 → jsonschema 校验，§8.3）
@@ -766,6 +787,45 @@ mod tests {
         let (draft, _) = agent.run("hi").await.unwrap();
         assert_eq!(draft.partial.mc_version.as_deref(), Some("26.2"));
         assert_eq!(draft.partial.max_players, Some(6));
+    }
+
+    #[tokio::test]
+    async fn 双重编码坏json_拒绝信息可指导修正() {
+        // v0.9.1 实测：模型把参数整体写成字符串，且内层手写坏 JSON
+        //（缺冒号、大写 False）——拒绝信息必须点名双重编码并给出重交指令
+        let bad_inner = r#"{"account_kind":"online", "java_installed"False, "mc_version":"26.2"}"#;
+        let mut bad_resp = resp_submit();
+        bad_resp.tool_calls[0].function.arguments =
+            serde_json::Value::String(bad_inner.into()).to_string();
+        let bus = EventBus::new();
+        let client = ScriptedClient::new(vec![bad_resp, resp_submit()]);
+        let svc = LlmService::with_client(
+            client,
+            "fake",
+            Decimal::ZERO,
+            Arc::new(crate::llm::SpendLedger::new()),
+            bus.clone(),
+        );
+        let deps =
+            AgentDeps::new(KnowledgeBase::embedded().unwrap(), AppConfig::default()).unwrap();
+        let agent = RequirementAgent::new(&svc, &deps, bus, "t5".into(), CancellationToken::new());
+
+        let (draft, messages) = agent.run("hi").await.unwrap();
+        assert_eq!(
+            draft.partial.mc_version.as_deref(),
+            Some("1.21.1"),
+            "第二轮修正后的交卷应被接受"
+        );
+        let rejected = messages
+            .iter()
+            .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("call-1"))
+            .expect("第一轮坏参数应产生 tool 拒绝消息");
+        let text = rejected.content.as_deref().unwrap();
+        assert!(text.contains("双重编码"), "拒绝信息应点名双重编码：{text}");
+        assert!(
+            text.contains("true/false") && text.contains("重"),
+            "拒绝信息应含重交指令：{text}"
+        );
     }
 
     #[tokio::test]
