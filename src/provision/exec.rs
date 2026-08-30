@@ -102,9 +102,32 @@ pub async fn deploy(
     preflight(spec, ctx, task_id).await?;
     step_done(ctx, task_id, "preflight", true, None);
 
-    // Java 供给（§8.8）；required_major 缺省时由知识库查表兜底
-    if spec.java.required_major == 0 {
-        spec.java.required_major = ctx.kb.java_major_for(&spec.mc_version).unwrap_or(21);
+    // Java 供给（§8.8）：required_major 以官方动态值为准（v0.9 与 check_version_compat
+    // 同口径，"能查就不猜"），上游不可达时回落知识库静态表；决策树此前的静态外推
+    // 若与官方口径不一致（如版本制式切换），以此处为准并留痕
+    let manifest_major = match MojangClient::new(ctx.http.clone())
+        .version_java_major(&spec.mc_version)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                "获取 {} 的官方 Java 需求失败，回落静态表：{e}",
+                spec.mc_version
+            );
+            None
+        }
+    };
+    let (official_major, source) =
+        crate::knowledge::resolve_java_major(manifest_major, &ctx.kb, &spec.mc_version);
+    let official_major = official_major.unwrap_or(21);
+    if spec.java.required_major != official_major {
+        tracing::info!(
+            "Java 需求校准：{} 官方要求 Java {official_major}（口径 {source:?}），原值 {}",
+            spec.mc_version,
+            spec.java.required_major
+        );
+        spec.java.required_major = official_major;
     }
     step_begin(ctx, task_id, "java", "Java 供给");
     let java_runtime = resolve_java(

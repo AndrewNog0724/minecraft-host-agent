@@ -1,6 +1,12 @@
 # L1 结构化事实：MC 版本 → Java 大版本映射（§8.9）
-# 来源：Minecraft Wiki 与各服务端官方文档；采集日期 2026-08-28
+# 来源：piston-meta 版本 JSON javaVersion 字段实测（2026-08-30）+ Minecraft Wiki 双源核对
 # 匹配规则：取 min_version <= 目标版本 的最后一条；这里的 Java 大版本是"官方最低要求"
+# v0.9 勘误：Mojang 2026 起改用年份制版本号（26.1/26.2…），且 Java 21→25 的分界在 26.1。
+# 本表自 v0.9 起仅为离线兜底——在线时以版本 JSON 的 javaVersion 动态值为准（§8.4）。
+[[entries]]
+min_version = "26.1"
+java_major = 25
+
 [[entries]]
 min_version = "1.20.5"
 java_major = 21

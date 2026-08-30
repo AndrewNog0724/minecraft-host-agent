@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::AppConfig;
 use crate::events::{EventBus, Phase, TaskId, TraceKind, TraceStep};
 use crate::knowledge::upstream::{ModrinthClient, MojangClient};
-use crate::knowledge::{CompatReport, KnowledgeBase};
+use crate::knowledge::{CompatReport, JavaMajorSource, KnowledgeBase};
 use crate::llm::{ChatMessage, LlmError, LlmService, ToolCall, ToolDecl};
 use crate::provision::java;
 use crate::spec::ServerSpecDraft;
@@ -88,6 +88,25 @@ impl AgentDeps {
             );
         }
         Ok(cache.clone().unwrap_or_default())
+    }
+
+    /// MC 版本 → 官方最低 Java 大版本（v0.9，"能查就不猜"）：
+    /// piston-meta 版本 JSON 的 `javaVersion.majorVersion` 动态优先，
+    /// 上游不可达或字段缺失时回落 L1 静态表，并标明口径来源。
+    pub async fn java_major_for_version(&self, mc_version: &str) -> (Option<u8>, JavaMajorSource) {
+        let mojang = MojangClient::new(self.http.clone());
+        let manifest_major = match mojang.version_java_major(mc_version).await {
+            Ok(Some(major)) => Some(major),
+            Ok(None) => {
+                tracing::warn!("版本 {mc_version} 的版本 JSON 缺 javaVersion 字段，回落 L1 静态表");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("获取 {mc_version} 的官方 Java 需求失败，回落 L1 静态表：{e}");
+                None
+            }
+        };
+        crate::knowledge::resolve_java_major(manifest_major, &self.kb, mc_version)
     }
 }
 
@@ -209,12 +228,14 @@ impl<'a> RequirementAgent<'a> {
                             .any(|r| r == v)
                     })
                     .unwrap_or(false);
-                let java_major = self.deps.kb.java_major_for(&mc);
+                // v0.9：Java 需求以官方动态值为准（L1 表仅离线兜底），口径随报告返回
+                let (java_major, java_major_source) = self.deps.java_major_for_version(&mc).await;
                 let suggestions = crate::knowledge::suggest_versions(&releases, &mc, 5);
                 let report = CompatReport {
                     mc_version: mc,
                     exists,
                     java_major,
+                    java_major_source,
                     software,
                     issues: if exists {
                         vec![]

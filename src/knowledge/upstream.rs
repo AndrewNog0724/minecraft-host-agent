@@ -38,6 +38,16 @@ pub enum UpstreamError {
     },
     #[error("上游响应缺少预期字段：{0}")]
     BadResponse(String),
+    #[error(
+        "mod {project} 没有 MC {mc}/{loader} 的可用构建（该 mod 当前最高支持 {latest_supported}）。\
+         可询问玩家是否换用其它 mod、降低 MC 版本，或改玩无 mod 服务器"
+    )]
+    NoCompatibleVersion {
+        project: String,
+        mc: String,
+        loader: String,
+        latest_supported: String,
+    },
     #[error("下载被取消")]
     Cancelled,
 }
@@ -293,6 +303,16 @@ struct ManifestEntry {
 #[derive(Debug, Deserialize)]
 struct VersionJson {
     downloads: serde_json::Value,
+    /// 官方 Java 最低要求（Mojang 启动器同源；v0.9 起为 Java 需求事实源）。
+    /// 极老版本可能缺该字段，Option 兜底。
+    #[serde(rename = "javaVersion", default)]
+    java_version: Option<VersionJavaInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionJavaInfo {
+    #[serde(rename = "majorVersion")]
+    major_version: u8,
 }
 
 pub struct MojangClient {
@@ -316,6 +336,21 @@ impl MojangClient {
             .filter(|v| v.entry_type == "release")
             .map(|v| v.id)
             .collect())
+    }
+
+    /// MC 版本 → 官方最低 Java 大版本（v0.9：Java 需求动态事实源，§8.4）。
+    /// 链路：清单定位条目 → 条目 URL 的版本 JSON → `javaVersion.majorVersion`。
+    /// 版本 JSON 不可变且本方法每任务至多调用两次（工具 + preflight），
+    /// 不做进程内缓存，避免引入共享可变状态。极老版本缺字段时返回 Ok(None)。
+    pub async fn version_java_major(&self, mc_version: &str) -> Result<Option<u8>, UpstreamError> {
+        let manifest: Manifest = self.base.get_typed(Self::MANIFEST_URL).await?;
+        let entry = manifest
+            .versions
+            .iter()
+            .find(|v| v.id == mc_version)
+            .ok_or_else(|| UpstreamError::BadResponse(format!("清单中无版本 {mc_version}")))?;
+        let version_json: VersionJson = self.base.get_typed(&entry.url).await?;
+        Ok(version_json.java_version.map(|j| j.major_version))
     }
 
     /// 原版服务端下载项（URL + sha1 均来自官方元数据）。
@@ -463,6 +498,13 @@ struct ModrinthSearch {
     hits: Vec<SearchHit>,
 }
 
+/// project 元数据（仅取受支持版本列表，NoCompatibleVersion 说明字段用）。
+#[derive(Debug, Deserialize)]
+struct ModrinthProject {
+    #[serde(default)]
+    game_versions: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SearchHit {
     project_id: String,
@@ -591,10 +633,29 @@ impl ModrinthClient {
             mc = mc_version.replace('"', ""),
             loader = loader.replace('"', ""),
         );
-        let versions: Vec<ModrinthVersion> = self.base.get_typed(&versions_url).await?;
-        let version = versions.first().ok_or(UpstreamError::BadResponse(format!(
-            "mod {project} 没有 {mc_version}/{loader} 的可用版本"
-        )))?;
+        // 2026-08 实测（§12 上游韧性）：过滤无结果时 Modrinth 稳定返回 200 空数组，
+        // 间歇性返回 404 空体——两条路径都必须语义化为"无兼容版本"并附该 mod
+        // 当前最高支持版本，禁止让玩家看到莫名其妙的"请求失败（HTTP 404）"。
+        let versions: Vec<ModrinthVersion> = match self.base.get_typed(&versions_url).await {
+            Ok(v) => v,
+            Err(UpstreamError::Status { status: 404, .. }) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let version = match versions.first() {
+            Some(v) => v,
+            None => {
+                let latest_supported = self
+                    .latest_supported_version(project)
+                    .await
+                    .unwrap_or_else(|_| "未知".into());
+                return Err(UpstreamError::NoCompatibleVersion {
+                    project: project.to_string(),
+                    mc: mc_version.to_string(),
+                    loader: loader.to_string(),
+                    latest_supported,
+                });
+            }
+        };
         let file = version
             .files
             .iter()
@@ -615,6 +676,17 @@ impl ModrinthClient {
                 .filter_map(|d| d.project_id.clone())
                 .collect(),
         })
+    }
+
+    /// 该 mod 当前最高支持的 MC 版本（NoCompatibleVersion 的说明字段）。
+    /// project 元数据的 game_versions 按时间升序排列（2026-08 实测），取末位。
+    async fn latest_supported_version(&self, project: &str) -> Result<String, UpstreamError> {
+        let url = format!("{}/project/{project}", Self::API);
+        let meta: ModrinthProject = self.base.get_typed(&url).await?;
+        meta.game_versions
+            .last()
+            .cloned()
+            .ok_or_else(|| UpstreamError::BadResponse(format!("mod {project} 无任何受支持版本")))
     }
 }
 
@@ -735,6 +807,46 @@ mod tests {
         let item = client.server_jar("1.21.1").await.unwrap();
         assert!(item.url.starts_with("https://"));
         assert!(item.sha1.is_some(), "Mojang 官方元数据必须带 sha1");
+    }
+
+    #[tokio::test]
+    #[ignore = "真实上游连通性冒烟（计网络流量）：cargo test -- --ignored"]
+    async fn 冒烟_年份制版本的官方java需求() {
+        // v0.9：26.2 为年份制正式版，官方要求 Java 25（piston-meta + wiki 双源核实）
+        let client = MojangClient::new(base());
+        let releases = client.release_versions().await.unwrap();
+        assert!(
+            releases.iter().any(|v| v == "26.2"),
+            "清单应包含年份制 26.2"
+        );
+        let major = client.version_java_major("26.2").await.unwrap();
+        assert_eq!(major, Some(25), "26.2 官方最低 Java 大版本应为 25");
+        // 1.x 时代版本同样可查（分界在 26.1）
+        let major = client.version_java_major("1.21.1").await.unwrap();
+        assert_eq!(major, Some(21));
+    }
+
+    #[tokio::test]
+    #[ignore = "真实上游连通性冒烟（计网络流量）：cargo test -- --ignored"]
+    async fn 冒烟_无兼容构建语义化报错() {
+        // v0.9：过滤无结果时上游返回 404 空体，须语义化为 NoCompatibleVersion
+        // 并附该 mod 当前最高支持版本（暮色森林系项目实测最高 1.21.1）
+        let client = ModrinthClient::new(base());
+        let err = client
+            .resolve_mod("eDeSn4Ds", "26.2", "fabric")
+            .await
+            .unwrap_err();
+        match err {
+            UpstreamError::NoCompatibleVersion {
+                mc,
+                latest_supported,
+                ..
+            } => {
+                assert_eq!(mc, "26.2");
+                assert_eq!(latest_supported, "1.21.1");
+            }
+            other => panic!("应报 NoCompatibleVersion，实际 {other:?}"),
+        }
     }
 
     #[tokio::test]

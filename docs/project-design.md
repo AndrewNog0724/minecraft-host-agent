@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.8.1（活文档，持续迭代）
+- **版本**：v0.9（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -315,7 +315,7 @@ struct TaskTrace {
 
 - 静态知识库（L1，分层体系见 §8.9）：随包资源文件（TOML），含 MC→Java 映射、加载器生态、常见端口、mod 中文别名表（`search_mods` 先查别名再查 Modrinth）、崩溃错误模式库（供 diagnose 使用）；带版本号与来源日期，可独立更新。
 - 上游客户端：Mojang piston-meta、PaperMC v2、Fabric meta、Modrinth v2、**Adoptium v3（Java 供给，见 §8.8）**、**SakuraFrp v4（穿透，见 §8.6）**；统一 trait `UpstreamClient`，代理与镜像在 HTTP 层统一注入。
-- 版本校验管线：`semver` 解析（非法输入如"26.2"直接拒绝）→ 上游存在性核对 → 依赖闭包解析（Modrinth `dependencies` 递归展开）→ 产出带哈希的下载清单。
+- 版本校验管线：`semver` 形式校验（只受理 `x.y[.z]` 纯数字正式版——**2026 起 Mojang 改用年份制版本号**，`26.2` / `26.1.2` 与传统 `1.21.1` 均合法，快照（`26.3-snapshot-N`）与胡编输入拒绝；v0.8.2 勘误：原"非法输入如 26.2 直接拒绝"系 1.x 时代假设，代码与测试实际早已按形式校验处理）→ 上游存在性核对（piston-meta 清单，决策树与部署前各一道闸）→ **Java 需求动态化（v0.9，"能查就不猜"）**：以版本 JSON 的 `javaVersion.majorVersion` 为事实来源（Mojang 官方启动器同源；实测 Java 21→25 的分界在 26.1），L1 静态表降级为**离线兜底**，`CompatReport.java_major_source` 标明口径（manifest / l1_fallback / unknown）→ 依赖闭包解析（Modrinth `dependencies` 递归展开）→ 产出带哈希的下载清单。
 
 ### 8.5 provision：决策树引擎与执行流水线
 
@@ -417,7 +417,8 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 | 架构适配 | `std::env::consts::ARCH`（x86_64 / aarch64）+ OS 探测 | Windows on ARM 等场景自动选对包 |
 | 校验 | sha256 强制校验后解压；失败删除重试一次再报错 | 与服务端 / mod 下载同一套安全管线 |
 | 解压 | `zip` crate 纯 Rust 解压到受管目录 | 无外部依赖 |
-| 网络 | 走全局代理 / 镜像机制（国内默认镜像：清华 TUNA Adoptium 镜像） | 同 Q3 网络问题的统一解法 |
+| 网络要求 | 网络 | 走全局代理 / 镜像机制（国内默认镜像：清华 TUNA Adoptium 镜像） | 同 Q3 网络问题的统一解法 |
+| 需求口径 | Java 版本需求动态化（v0.9）：`required_major` 以 piston-meta 版本 JSON `javaVersion.majorVersion` 为准（`check_version_compat` 工具与部署 preflight 同口径），L1 静态表仅离线兜底——静态外推在版本制式切换时会算错（实测 26.2 需 25 而外推得 21） | 权威事实源，不猜 |
 | 路径解析 | 安装完成后把**绝对路径**写入 `JavaPlan` 并入档案；运行服务端一律用该路径 | 不依赖 PATH，跨会话可复现 |
 | 失败路径 | 下载失败按归因提示（代理 / 镜像建议）；整体失败则任务停在 Java 供给步骤，可续跑 | NFR-3 可恢复 |
 
@@ -448,7 +449,7 @@ enum JavaRuntime {
 
 **取舍：不使用 RAG / 向量检索（D10）。** 理由：①本域事实为枚举型，总量 KB 级且结构规整，精确查表优于模糊语义检索；②每条事实要求确定性正确，版本号不容"语义相近"；③上下文路由已由决策树承担，无需 embedding 决定读哪段文档；④embedding 调用属 API 开销，按 R6 要求须计入成本，能省则省。边界：P2 若扩充非结构化崩溃案例库，再评估轻量检索（关键词优先）。
 
-**维护机制**：L1 / L3 / L-1 为数据文件——带版本号、来源与采集日期（与 D3 价格表同纪律），可独立更新、git 可 diff；L4 随代码版本发布。别名表是体验级定制点：中国玩家说"暮色森林""工业"，`search_mods` 先查别名表再走 Modrinth 检索——通用 Agent 在这一步就因不知道英文 slug 而幻觉，我们用一张数据表根治。
+**维护机制**：L1 / L3 / L-1 为数据文件——带版本号、来源与采集日期（与 D3 价格表同纪律），可独立更新、git 可 diff；L4 随代码版本发布。别名表是体验级定制点：中国玩家说"暮色森林""工业"，`search_mods` 先查别名表再走 Modrinth 检索——通用 Agent 在这一步就因不知道英文 slug 而幻觉，我们用一张数据表根治。**v0.9 复核记录（采集日期 2026-08-30，Modrinth API 实测）**：`java_map` 补年份制条目 `26.1 → Java 25`（piston-meta 版本 JSON 实测）；别名表 10 条全表复核，修正暮色森林（原 TeamTwilight 项目已不在 Modrinth，slug 404，改登支持版本最高的社区项目）与沉浸工程 slug 笔误。
 
 ## 9. R1–R6 实现设计（课程硬性要求逐条落地）
 
@@ -502,6 +503,7 @@ enum JavaRuntime {
 - 执行安全：危险动作清单（防火墙、删除、公网暴露、系统 PATH 修改）默认需确认；`--yes` 仅限 CI / 演示并留痕。Java 供给只写受管目录，不触碰上述任何项。
 - 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
 - 离线模式：风险说明与缓解（白名单必选）是决策树节点，非 LLM 自由发挥。
+- 上游韧性（v0.9）：**生态时滞**——mod 对新版本构建滞后属常态（26.2 发布时暮色森林系项目仅支持 1.21.1），`resolve_mod` 必须把"mod 存在但无此版本构建"语义化为 `NoCompatibleVersion` 并附该 mod 当前最高支持版本，禁止报成"请求失败"；**API 行为变更**——Modrinth 对"过滤无结果"实测出现过 200 空数组（稳定形态）与 404 空体（间歇形态）两种返回，代码对两者统一语义化；路由与响应形状变化纳入上游勘误纪律（§14.1 同类）。
 
 ## 13. 测试与验收策略
 
@@ -606,4 +608,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.7.1 | Windows 实测勘误：`.ps1` 改存 UTF-8 with BOM，修复 Windows PowerShell 5.1 按 GBK 解码无 BOM 文件导致的连锁解析错误（§8.7 编码约束） |
 | 2026-08-30 | v0.8 | 首次真实 LLM 实测缺陷复盘（决议 D16/D17）：`submit_spec` 连续校验失败根因收敛与 SSE 解析加固（§8.2/§8.3，含诊断留痕、专用错误类型、失败会话落盘、五种 mock 形状回归）；需求理解阶段全程进度可视化与模型文本直显（§8.7，R4 合规补全） |
 | 2026-08-30 | v0.8.1 | 实测定位 submit_spec 校验失败真因（D16 第 4 条）：模型双重 JSON 编码参数 + 缺 `partial` 包装顶层平铺——llm 层字符串化解包、agent 层 `normalize_draft` 形状规整；实测载荷回归测试覆盖 |
+| 2026-08-30 | v0.9 | 游戏版本体系适配年份制 + Java 需求动态化（§8.4/§8.8/§8.9/§12，官方 API 与 wiki 双源核实）：26.x 为 2026 年份制正式版、Java 21→25 分界在 26.1；`javaVersion.majorVersion` 升为 Java 需求事实源（L1 表降离线兜底并补 26.1→25），`check_version_compat` 与部署 preflight 同口径；`CompatReport.java_major_source` 标明口径；Modrinth 404=空结果语义化为 `NoCompatibleVersion` 并附最高支持版本；别名表全表复核修正（暮色森林/沉浸工程） |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

@@ -17,12 +17,40 @@ pub const ERROR_PATTERNS_TOML: &str = include_str!("../assets/knowledge/error_pa
 
 #[derive(Debug, Error)]
 pub enum KnowledgeError {
-    #[error("版本号非法：{input}。请给出如 1.21.1 的 MC 正式版版本号")]
+    #[error("版本号非法：{input}。请给出 MC 正式版版本号（如 26.2 或 1.21.1）")]
     BadVersion { input: String },
     #[error("查询上游 API 失败：{0}")]
     Upstream(#[from] upstream::UpstreamError),
     #[error("mod {0} 在 Modrinth 上不存在（或无匹配版本）。检索无结果")]
     ModNotFound(String),
+}
+
+/// Java 需求口径来源（v0.9：动态事实优先，静态表只兜底）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JavaMajorSource {
+    /// piston-meta 版本 JSON 的 `javaVersion` 字段（Mojang 官方启动器同源）
+    Manifest,
+    /// 上游不可达/字段缺失时的 L1 静态表兜底
+    L1Fallback,
+    /// 动态与静态都拿不到
+    Unknown,
+}
+
+/// Java 需求解析（v0.9，"能查就不猜"）：动态事实优先，L1 兜底。
+/// 返回 (Java 大版本, 口径来源)。纯函数，便于离线单测。
+pub fn resolve_java_major(
+    manifest_major: Option<u8>,
+    kb: &KnowledgeBase,
+    mc_version: &str,
+) -> (Option<u8>, JavaMajorSource) {
+    if let Some(major) = manifest_major {
+        return (Some(major), JavaMajorSource::Manifest);
+    }
+    match kb.java_major_for(mc_version) {
+        Some(major) => (Some(major), JavaMajorSource::L1Fallback),
+        None => (None, JavaMajorSource::Unknown),
+    }
 }
 
 /// MC → Java 映射条目。
@@ -149,6 +177,8 @@ pub struct CompatReport {
     pub mc_version: String,
     pub exists: bool,
     pub java_major: Option<u8>,
+    /// Java 需求口径来源（v0.9）：manifest = 官方动态值，l1_fallback = 静态表
+    pub java_major_source: JavaMajorSource,
     pub software: String,
     /// 不通过的说明（供 ui / LLM 澄清）
     pub issues: Vec<String>,
@@ -227,6 +257,11 @@ mod tests {
     #[test]
     fn 版本映射查表() {
         let kb = kb();
+        // v0.9：年份制版本——26.1 起官方要求 Java 25（piston-meta 实测）
+        assert_eq!(kb.java_major_for("26.2"), Some(25));
+        assert_eq!(kb.java_major_for("26.1"), Some(25));
+        assert_eq!(kb.java_major_for("26.1.2"), Some(25));
+        // 1.x 时代规则不受影响
         assert_eq!(kb.java_major_for("1.21.1"), Some(21));
         assert_eq!(kb.java_major_for("1.21"), Some(21));
         assert_eq!(kb.java_major_for("1.20.4"), Some(17));
@@ -235,36 +270,68 @@ mod tests {
         assert_eq!(kb.java_major_for("1.17.1"), Some(16));
         assert_eq!(kb.java_major_for("1.16.5"), Some(8));
         assert_eq!(kb.java_major_for("25w14a"), None, "快照版不受理");
+        assert_eq!(
+            kb.java_major_for("26.3-snapshot-10"),
+            None,
+            "年份制快照同样不受理"
+        );
+    }
+
+    #[test]
+    fn java需求解析_动态优先静态兜底() {
+        let kb = kb();
+        // 官方动态值可用 → manifest 口径
+        let (major, source) = resolve_java_major(Some(25), &kb, "26.2");
+        assert_eq!((major, source), (Some(25), JavaMajorSource::Manifest));
+        // 动态缺失但静态表命中 → l1_fallback 口径
+        let (major, source) = resolve_java_major(None, &kb, "26.2");
+        assert_eq!((major, source), (Some(25), JavaMajorSource::L1Fallback));
+        // 两处都拿不到 → unknown（semver 数值比较下 1.5 低于最早收录版本）
+        let (major, source) = resolve_java_major(None, &kb, "1.5");
+        assert_eq!((major, source), (None, JavaMajorSource::Unknown));
     }
 
     #[test]
     fn 别名查表() {
         let kb = kb();
         // project 为 Modrinth project_id（API 事实键），slug 为可读名
-        assert_eq!(kb.alias_lookup("暮色森林").as_deref(), Some("1XoXkBdT"));
+        // v0.9 复核：暮色森林改登 eDeSn4Ds（原 TeamTwilight 已不在 Modrinth）
+        assert_eq!(kb.alias_lookup("暮色森林").as_deref(), Some("eDeSn4Ds"));
         assert_eq!(kb.alias_slug("暮色森林").as_deref(), Some("twilightforest"));
         assert_eq!(kb.alias_lookup("不存在的mod"), None);
     }
 
     #[test]
-    fn 幻觉版本号被拒绝() {
-        // 基线实验样例："26.2"（AI 幻觉出的版本号）
-        assert!(
-            normalize_version("26.2").is_ok(),
-            "26.2 形式合法，存在性由上游清单判定"
-        );
+    fn 形式合法版本被接受_存在性交上游判定() {
+        // v0.9 勘误：26.2 是年份制正式版（2026-06 发布），非幻觉；形式合法，
+        // 存在性由上游清单判定。真正的非法输入是快照名与胡编。
+        assert!(normalize_version("26.2").is_ok());
+        assert!(normalize_version("26.1.2").is_ok());
         assert!(normalize_version(" bananas").is_err());
         assert!(normalize_version("").is_err());
         assert!(normalize_version("25w14a").is_err(), "快照名非法");
+        assert!(
+            normalize_version("26.3-snapshot-10").is_err(),
+            "年份制快照非法"
+        );
     }
 
     #[test]
     fn 就近版本建议() {
-        let available: Vec<String> = ["1.21.1", "1.21", "1.20.6", "1.20.4", "1.19.2"]
+        let mut available: Vec<String> = ["1.21.1", "1.21", "1.20.6", "1.20.4", "1.19.2"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let suggestions = suggest_versions(&available, "1.20.99", 3);
+        assert_eq!(suggestions.first().map(String::as_str), Some("1.20.6"));
+        // 年份制：1.x 拼错的建议不会窜到 26.x，反之亦然
+        available = ["26.2", "26.1", "1.21.1", "1.20.6"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let suggestions = suggest_versions(&available, "26.3", 2);
+        assert_eq!(suggestions.first().map(String::as_str), Some("26.2"));
+        let suggestions = suggest_versions(&available, "1.20.99", 2);
         assert_eq!(suggestions.first().map(String::as_str), Some("1.20.6"));
     }
 

@@ -1,15 +1,18 @@
 # L1 结构化事实：mod 中文名称 → Modrinth 项目映射（§8.9）
-# 来源：Modrinth API v2 实测核对；采集日期 2026-08-28
+# 来源：Modrinth API v2 实测核对；采集日期 2026-08-30（v0.9 全表复核）
 # 重要：2026-08 实测 Modrinth project 端点仅支持 project_id（按 slug 查询已 404），
 # 故本表存 project_id；slug 仅用于生成可读的方案名（spec_id）。
 # search_mods 工具先查本表，未命中再走 Modrinth 文本检索——
 # 从机制上根治通用 Agent "不知道英文标识就编一个" 的幻觉。
 [[aliases]]
 zh = "暮色森林"
-project = "1XoXkBdT"
+project = "eDeSn4Ds"
 slug = "twilightforest"
-# 注：暮色森林官方仅发布于 CurseForge；此处为 Modrinth 站内维护的移植版
-# The Twilight Forest Unofficial。升级迁移（FR-11）时需留意版本滞后。
+# 注：官方 TeamTwilight 项目已不在 Modrinth（2026-08-30 实测 slug the-twilight-forest 404），
+# project 改登站内支持版本最高（1.21.1）的社区项目 Twilight Forest - Dungeons & Villages
+# （真实 slug：the-twilight-forest-dungeons-villages）。原 1XoXkBdT（Unofficial 移植，
+# 仅 1.20.1）已弃用。slug 字段为 spec_id 可读名，非真实 slug；版本支持以工具返回为准，
+# 目标版本无构建时报 NoCompatibleVersion。
 
 [[aliases]]
 zh = "机械动力"
