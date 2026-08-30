@@ -75,7 +75,7 @@ impl HttpBase {
     pub fn new(cfg: &AppConfig) -> Result<Self, UpstreamError> {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
-            .user_agent("mc-host-agent/0.1 (course project)");
+            .user_agent("mcha/0.1 (course project)");
         if !cfg.network.proxy.is_empty() {
             builder = builder.proxy(
                 reqwest::Proxy::all(&cfg.network.proxy)

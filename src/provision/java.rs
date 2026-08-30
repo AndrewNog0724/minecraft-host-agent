@@ -213,7 +213,7 @@ pub async fn resolve_java(
     }
     urls.push(asset.download_url.clone());
 
-    let staging = std::env::temp_dir().join("mc-host-agent-jre");
+    let staging = std::env::temp_dir().join("mcha-jre");
     let mut zip_path: Option<std::path::PathBuf> = None;
     let mut last_err: Option<UpstreamError> = None;
     for url in urls {

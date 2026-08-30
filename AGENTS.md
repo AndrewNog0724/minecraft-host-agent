@@ -45,7 +45,8 @@ cargo clippy -- -D warnings    # 静态检查
 
 ## 代码规范
 
-- Rust edition 2024，包名 `agent`。
+- Rust edition 2024，包名 `minecraft-host-agent`，二进制/CLI 命令 `mcha`。
+- **命名规范（决议 D15）**：产品名 Minecraft Host Agent，简称 MCHA（行文）/ mcha（标识符）；数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`）；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`。作为技术概念的 "Agent"（AI Agent、agent-core 模块、`agent.rs`、`RequirementAgent` 等）不属于产品命名，不改。
 - 模块化组织：每完成一个模块必须可编译、可运行，确认无误后再进入下一个（先跑通再美化）。
 - 主流程避免 `unwrap()` / `expect()`，错误要显式处理并向上传播。
 - 注释、文档、Git 提交信息使用中文；标识符使用英文。

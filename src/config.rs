@@ -1,7 +1,7 @@
 //! 应用配置（R3）：模型、价格表、预算、网络代理与镜像、穿透 token。
 //!
 //! 来源：`<数据目录>/config.toml` + `.env`（仅 API Key）。
-//! 数据目录：`~/.mc-host-agent/`（Windows：`%APPDATA%\mc-host-agent\`，决议 D4）。
+//! 数据目录：`~/.mcha/`（Windows：`%APPDATA%\mcha\`，决议 D4/D15）。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const ENV_API_KEY: &str = "AGENT_API_KEY";
+pub const ENV_API_KEY: &str = "MCHA_API_KEY";
 pub const CONFIG_FILE: &str = "config.toml";
 pub const ENV_FILE: &str = ".env";
 
@@ -31,7 +31,7 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("配置缺少必填项：{0}（可运行 `agent config init` 生成模板后填写）")]
+    #[error("配置缺少必填项：{0}（可运行 `mcha config init` 生成模板后填写）")]
     Missing(String),
     #[error("配置项取值非法：{0}")]
     Invalid(String),
@@ -51,7 +51,7 @@ pub struct ModelConfig {
     /// 模型名（如 glm-5.2）
     #[serde(default)]
     pub model: String,
-    /// API Key 所在环境变量名（默认 AGENT_API_KEY，值放 .env）
+    /// API Key 所在环境变量名（默认 MCHA_API_KEY，值放 .env）
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
     /// 上下文长度（token）：发送前按此裁剪历史
@@ -182,17 +182,17 @@ pub struct AppConfig {
 
 /// 数据目录定位（决议 D4）。
 pub fn data_dir() -> PathBuf {
-    if let Ok(custom) = std::env::var("MC_HOST_AGENT_DATA") {
+    if let Ok(custom) = std::env::var("MCHA_DATA") {
         return PathBuf::from(custom);
     }
     if let Ok(appdata) = std::env::var("APPDATA") {
-        // Windows：%APPDATA%\mc-host-agent
-        return Path::new(&appdata).join("mc-host-agent");
+        // Windows：%APPDATA%\mcha
+        return Path::new(&appdata).join("mcha");
     }
-    // Linux / macOS：~/.mc-host-agent
+    // Linux / macOS：~/.mcha
     match std::env::var("HOME") {
-        Ok(home) => Path::new(&home).join(".mc-host-agent"),
-        Err(_) => PathBuf::from(".mc-host-agent"),
+        Ok(home) => Path::new(&home).join(".mcha"),
+        Err(_) => PathBuf::from(".mcha"),
     }
 }
 
@@ -201,7 +201,7 @@ pub fn config_path() -> PathBuf {
 }
 
 /// 工作区环境变量（决议 D11：优先级高于 config.toml）。
-pub const ENV_WORKSPACE: &str = "MC_HOST_AGENT_WORKSPACE";
+pub const ENV_WORKSPACE: &str = "MCHA_WORKSPACE";
 
 /// 展开 `~` 开头的路径（决议 D11）：Windows 用 %USERPROFILE%，其余用 $HOME。
 pub fn expand_tilde(raw: &str) -> PathBuf {
@@ -223,7 +223,7 @@ pub fn expand_tilde(raw: &str) -> PathBuf {
 
 impl AppConfig {
     /// 工作区解析（FR-19，决议 D11）。
-    /// 优先级：环境变量 `MC_HOST_AGENT_WORKSPACE` > config `[workspace] path` > 默认 `<数据目录>/profiles`。
+    /// 优先级：环境变量 `MCHA_WORKSPACE` > config `[workspace] path` > 默认 `<数据目录>/profiles`。
     /// 返回已创建且验证可写的绝对/相对路径；`~` 展开后交由文件系统解释。
     pub fn workspace_dir(&self) -> Result<PathBuf, ConfigError> {
         let configured = std::env::var(ENV_WORKSPACE)
@@ -240,7 +240,7 @@ impl AppConfig {
             source,
         })?;
         // 可写性探针：Windows 的只读属性对目录不可靠，跨平台统一用临时文件验证
-        let probe = dir.join(".mc-host-agent-write-probe");
+        let probe = dir.join(".mcha-write-probe");
         std::fs::write(&probe, b"").map_err(|source| ConfigError::Workspace {
             path: dir.clone(),
             source,
@@ -275,7 +275,7 @@ impl AppConfig {
             path: path.clone(),
             source,
         })?;
-        // 注意：加载不做校验——`agent plan` 等不需要 LLM 的流程不应被模型配置阻塞；
+        // 注意：加载不做校验——`mcha plan` 等不需要 LLM 的流程不应被模型配置阻塞；
         // 需要 LLM 的流程在入口处显式调用 validate()
         toml::from_str(&raw).map_err(|source| ConfigError::Parse {
             path: path.clone(),
@@ -378,7 +378,7 @@ fn entry(model: &str, input: &str, output: &str, currency: &str) -> PriceEntry {
 /// 生成带注释的配置模板（缺项时给用户可复制的样例）。
 fn render_template() -> String {
     format!(
-        r#"# mc-host-agent 配置文件（R3）
+        r#"# Minecraft Host Agent (mcha) 配置文件（R3）
 # 完整说明见 README「配置」一节。改动后保存即生效（下次运行读取）。
 
 [model]
@@ -426,7 +426,7 @@ natfrp_token = ""
 
 # 工作区（FR-19）：服务端安装根目录。留空 = 默认数据目录内 profiles/。
 # 支持 ~ 展开（Windows 为用户主目录）与相对路径；也可用环境变量
-# MC_HOST_AGENT_WORKSPACE 覆盖（优先级更高）。
+# MCHA_WORKSPACE 覆盖（优先级更高）。
 [workspace]
 path = ""
 "#,
@@ -534,7 +534,7 @@ mod tests {
         let dir = cfg.workspace_dir().unwrap();
         assert!(dir.starts_with(tmp.path()));
         // 探针已清理，目录真实可写
-        assert!(!dir.join(".mc-host-agent-write-probe").exists());
+        assert!(!dir.join(".mcha-write-probe").exists());
     }
 
     #[test]

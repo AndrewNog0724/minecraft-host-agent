@@ -1,6 +1,8 @@
-# minecraft-host-agent
+# Minecraft Host Agent（MCHA）
 
-一个用 Rust 从零构建的、高度场景定制化的 AI Agent：**MC 联机设施建设 Agent**——面向 Minecraft Java 版好友联机场景的"开服管家"。本项目是程序设计课程大作业。
+> 仓库 `minecraft-host-agent`，简称 **MCHA**（标识符小写 `mcha`，决议 D15）。面向 Minecraft Java 版好友联机场景的"开服管家"。
+
+一个用 Rust 从零构建的、高度场景定制化的 AI Agent：**Minecraft Host Agent**——面向 Minecraft Java 版好友联机场景的"开服管家"。本项目是程序设计课程大作业。
 
 > **当前状态**：MVP（M1）已实现——一句话开服主流程（需求理解 → 决策树 → 部署 → 就绪）全部走通，R1–R6 固定功能完成。故障诊断（FR-09）与樱花frp 穿透编排（FR-08）随 P1 互试版交付。
 
@@ -18,7 +20,7 @@
 ## 功能清单（R1–R6）
 
 - [x] **R1 核心逻辑用 Rust 实现**：决策树、执行流水线、全部 API 编排、进程与文件管理均在 Rust 单二进制内；LLM 客户端亦为自研薄实现（reqwest + SSE）
-- [x] **R2 用户交互界面**：CLI 交互式终端（clap + dialoguer + indicatif），`agent new` 触发开服任务
+- [x] **R2 用户交互界面**：CLI 交互式终端（clap + dialoguer + indicatif），`mcha new` 触发开服任务
 - [x] **R3 可自定义模型配置**：`config.toml` + `.env`，支持 Endpoint / API Key / 上下文长度 / 思考模式 / 价格表（内置常见模型预设）与 `config set` 改写
 - [x] **R4 实时进度渲染与打断**：下载字节进度、步骤进度条、日志滚动；Ctrl-C 经 CancellationToken 干净退出，不留孤儿进程
 - [x] **R5 上下文历史管理**：任务轨迹逐轮落盘（`sessions/`），可查看（`sessions show`）、导出（`sessions export`，自动打码）；开服档案可保存 / 加载（`profiles/`）
@@ -47,14 +49,14 @@ bash scripts/bootstrap.sh
 脚本完成后运行上手向导，必填仅 3 项（endpoint / 模型名 / API Key），其余回车即默认：
 
 ```bash
-agent setup     # 配置向导 + 可选把 agent 注册进 PATH（复制到 ~/.cargo/bin）
-agent new "我们 5 个人，2 个正版 3 个离线，想玩带暮色森林的生存"
+mcha setup     # 配置向导 + 可选把 mcha 注册进 PATH（复制到 ~/.cargo/bin）
+mcha new "我们 5 个人，2 个正版 3 个离线，想玩带暮色森林的生存"
 ```
 
 以后想改配置，无需手编 TOML：
 
 ```bash
-agent config wizard   # 问答式修改（保留你文件里的注释）
+mcha config wizard   # 问答式修改（保留你文件里的注释）
 ```
 
 ## 构建与运行（手动方式）
@@ -65,7 +67,7 @@ Windows 前置：安装 [rustup](https://rustup.rs)（stable-msvc）与 [Visual 
 # 构建
 cargo build --release
 
-# 安装为全局命令（可选；装进 ~/.cargo/bin，任意目录可用 agent）
+# 安装为全局命令（可选；装进 ~/.cargo/bin，任意目录可用 mcha）
 cargo install --path .
 
 # 运行测试（不含联网测试）
@@ -77,18 +79,18 @@ cargo test -- --ignored
 
 ## 配置说明
 
-数据目录：`~/.mc-host-agent/`（Windows 为 `%APPDATA%\mc-host-agent\`）。推荐用向导完成配置；也可手动编辑：
+数据目录：`~/.mcha/`（Windows 为 `%APPDATA%\mcha\`）。推荐用向导完成配置；也可手动编辑：
 
 ```bash
 # 1. 生成配置模板
 cargo run --release -- config init
 
-# 2. 编辑配置文件：~/.mc-host-agent/config.toml
+# 2. 编辑配置文件：~/.mcha/config.toml
 #    必填两项：
 #      model.endpoint  —— OpenAI 兼容 API 地址（默认填了智谱 open.bigmodel.cn）
 #      model.model     —— 模型名
-# 3. 在 ~/.mc-host-agent/.env 中填入 API Key：
-#      AGENT_API_KEY=你的密钥
+# 3. 在 ~/.mcha/.env 中填入 API Key：
+#      MCHA_API_KEY=你的密钥
 
 # 4. 修改配置项示例
 cargo run --release -- config set model.model glm-5.2
@@ -97,7 +99,7 @@ cargo run --release -- config set model.thinking true  # 思考模式（视模�
 cargo run --release -- config set workspace.path D:\mc-servers  # 服务端安装根目录（FR-19）
 ```
 
-**工作区**（FR-19）：服务端安装位置可配置，优先级为环境变量 `MC_HOST_AGENT_WORKSPACE` > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开（Windows 为用户主目录）与相对路径。开服档案元数据始终存于数据目录。
+**工作区**（FR-19）：服务端安装位置可配置，优先级为环境变量 `MCHA_WORKSPACE` > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开（Windows 为用户主目录）与相对路径。开服档案元数据始终存于数据目录。
 
 国内网络建议启用 Adoptium 镜像（`[network]` 节，模板内有现成注释行）：
 

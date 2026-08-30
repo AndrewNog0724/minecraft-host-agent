@@ -15,7 +15,7 @@ function Test-Command($Name) {
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-Write-Host "=== mc-host-agent 环境引导（Windows）===" -ForegroundColor Cyan
+Write-Host "=== Minecraft Host Agent (MCHA) 环境引导（Windows）===" -ForegroundColor Cyan
 Write-Host "仓库：$RepoRoot"
 
 # ---- 1. winget（Win10 1709+ 自带；缺失则只能手动装，给出指引） ----
@@ -58,7 +58,7 @@ if ($hasMsvc) {
 }
 
 # ---- 4. 编译并安装本应用到 ~/.cargo/bin（天然在 PATH） ----
-Write-Host "[..] 正在编译并安装 agent（cargo install --path .，首次约几分钟）..."
+Write-Host "[..] 正在编译并安装 mcha（cargo install --path .，首次约几分钟）..."
 Push-Location $RepoRoot
 try {
     cargo install --path .
@@ -68,15 +68,15 @@ try {
 }
 
 # ---- 5. 验证与下一步 ----
-$agentCmd = Get-Command agent -ErrorAction SilentlyContinue
-if ($agentCmd) {
-    Write-Host "[ok] agent 已可在任意目录直接调用：$($agentCmd.Source)" -ForegroundColor Green
+$mchaCmd = Get-Command mcha -ErrorAction SilentlyContinue
+if ($mchaCmd) {
+    Write-Host "[ok] mcha 已可在任意目录直接调用：$($mchaCmd.Source)" -ForegroundColor Green
 } else {
-    Write-Host "[!] agent 已装进 $CargoBin，但当前会话 PATH 未包含它。" -ForegroundColor Yellow
+    Write-Host "[!] mcha 已装进 $CargoBin，但当前会话 PATH 未包含它。" -ForegroundColor Yellow
     Write-Host "    新开一个终端窗口即可生效；或手动把该目录加入用户 PATH。"
 }
 
 Write-Host ""
 Write-Host "=== 下一步 ===" -ForegroundColor Cyan
-Write-Host "  运行  agent setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
-Write-Host "  然后  agent new     —— 一句话开服"
+Write-Host "  运行  mcha setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
+Write-Host "  然后  mcha new     —— 一句话开服"

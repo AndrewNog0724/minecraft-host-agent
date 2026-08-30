@@ -75,7 +75,7 @@ pub enum ConfigAction {
     Wizard,
     /// 查看当前配置（密钥打码）
     Show,
-    /// 修改配置项，如 `agent config set model.model glm-5.2`
+    /// 修改配置项，如 `mcha config set model.model glm-5.2`
     Set { key: String, value: String },
 }
 
@@ -134,7 +134,7 @@ async fn cmd_new(
     // 3. LLM 需求理解环（不可用时引导走 plan 降级）
     let draft = {
         cfg.validate()
-            .context("LLM 配置不完整（可改用 `agent plan` 手动填写方案）")?;
+            .context("LLM 配置不完整（可改用 `mcha plan` 手动填写方案）")?;
         let svc = LlmService::new(&cfg, bus.clone(), Arc::new(crate::llm::SpendLedger::new()))
             .context("初始化 LLM 客户端失败")?;
         let deps = AgentDeps::new(kb.clone(), cfg.clone()).context("初始化工具依赖失败")?;
@@ -214,7 +214,7 @@ async fn cmd_new(
                 println!("{line}");
             }
             println!(
-                "\n档案已保存：profiles/{}（下次可用 `agent plan` 复用）",
+                "\n档案已保存：profiles/{}（下次可用 `mcha plan` 复用）",
                 spec.spec_id
             );
             bus.publish(TraceEvent::TaskFinished {
@@ -703,7 +703,7 @@ fn truncate(s: &str, width: usize) -> String {
 
 // ── 上手引导与配置向导（FR-18/19，决议 D12/D13/D14）────────────────────
 
-/// `agent setup`（FR-18）：配置向导 + 二进制注册。
+/// `mcha setup`（FR-18）：配置向导 + 二进制注册。
 async fn cmd_setup(with_binary: bool) -> anyhow::Result<()> {
     tokio::task::block_in_place(|| cmd_setup_inner(with_binary))
 }
@@ -711,9 +711,9 @@ async fn cmd_setup(with_binary: bool) -> anyhow::Result<()> {
 /// 向导主体（同步函数：dialoguer 阻塞交互；调用方负责 block_in_place）。
 fn cmd_setup_inner(with_binary: bool) -> anyhow::Result<()> {
     let mut cfg = AppConfig::load().context("加载配置失败")?;
-    println!("=== mc-host-agent 上手向导 ===");
+    println!("=== Minecraft Host Agent (MCHA) 上手向导 ===");
     println!("数据目录：{}", crate::config::data_dir().display());
-    println!("必填仅 3 项；其余保持默认，随时可重跑 `agent config wizard` 修改。");
+    println!("必填仅 3 项；其余保持默认，随时可重跑 `mcha config wizard` 修改。");
 
     wizard_required(&mut cfg)?;
 
@@ -732,7 +732,7 @@ fn cmd_setup_inner(with_binary: bool) -> anyhow::Result<()> {
     match cfg.validate() {
         Ok(()) => println!("[ok] 配置校验通过"),
         Err(e) => println!(
-            "[!] 尚未完全可用：{e}\n    可重跑本向导补齐；`agent plan` / `agent profiles` 等无需 LLM 的功能不受影响。"
+            "[!] 尚未完全可用：{e}\n    可重跑本向导补齐；`mcha plan` / `mcha profiles` 等无需 LLM 的功能不受影响。"
         ),
     }
 
@@ -742,8 +742,8 @@ fn cmd_setup_inner(with_binary: bool) -> anyhow::Result<()> {
     }
 
     println!("\n=== 下一步 ===");
-    println!("  agent new \"我们 5 个人，想玩暮色森林\"   一句话开服");
-    println!("  agent usage                          查看用量与费用");
+    println!("  mcha new \"我们 5 个人，想玩暮色森林\"   一句话开服");
+    println!("  mcha usage                          查看用量与费用");
     Ok(())
 }
 
@@ -987,19 +987,19 @@ fn write_env_file(path: &Path, env_name: &str, value: &str) -> anyhow::Result<()
     Ok(())
 }
 
-/// 二进制注册（决议 D12）：`agent` 不在 PATH 时把当前可执行文件复制到 cargo bin。
+/// 二进制注册（决议 D12）：`mcha` 不在 PATH 时把当前可执行文件复制到 cargo bin。
 fn register_binary() -> anyhow::Result<()> {
     let current = std::env::current_exe().context("定位当前可执行文件失败")?;
-    match agent_in_path() {
+    match command_in_path() {
         Some(found) if found == current => {
-            println!("[ok] agent 已注册在 PATH：{}", found.display());
+            println!("[ok] mcha 已注册在 PATH：{}", found.display());
         }
         Some(found) => {
-            println!("[i] PATH 中已有 agent：{}", found.display());
+            println!("[i] PATH 中已有 mcha：{}", found.display());
             println!("    当前运行的程序：{}", current.display());
             let replace = Confirm::new()
                 .with_prompt(
-                    "用当前程序覆盖 PATH 中的 agent？（正式安装请用 cargo install --path .）",
+                    "用当前程序覆盖 PATH 中的 mcha？（正式安装请用 cargo install --path .）",
                 )
                 .default(false)
                 .interact()
@@ -1030,11 +1030,11 @@ fn register_binary() -> anyhow::Result<()> {
 
 /// 可执行文件名（跨平台）。
 fn exe_name() -> &'static str {
-    if cfg!(windows) { "agent.exe" } else { "agent" }
+    if cfg!(windows) { "mcha.exe" } else { "mcha" }
 }
 
-/// 在 PATH 各目录中查找 agent 可执行文件。
-fn agent_in_path() -> Option<PathBuf> {
+/// 在 PATH 各目录中查找 mcha 可执行文件。
+fn command_in_path() -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         let candidate = dir.join(exe_name());
@@ -1059,7 +1059,7 @@ fn copy_self_to_cargo_bin(current: &Path) -> anyhow::Result<()> {
     std::fs::copy(current, &dest)
         .with_context(|| format!("复制 {} → {} 失败", current.display(), dest.display()))?;
     println!(
-        "[ok] 已复制到 {}；新开终端后运行 `agent --version` 验证",
+        "[ok] 已复制到 {}；新开终端后运行 `mcha --version` 验证",
         dest.display()
     );
     Ok(())
@@ -1110,11 +1110,11 @@ mod tests {
     fn env键替换与追加() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(".env");
-        std::fs::write(&path, "# 注释保留\nOTHER=1\nAGENT_API_KEY=旧的\n").unwrap();
+        std::fs::write(&path, "# 注释保留\nOTHER=1\nMCHA_API_KEY=旧的\n").unwrap();
 
-        write_env_file(&path, "AGENT_API_KEY", "新的").unwrap();
+        write_env_file(&path, "MCHA_API_KEY", "新的").unwrap();
         assert_eq!(
-            read_env_file_value(&path, "AGENT_API_KEY").as_deref(),
+            read_env_file_value(&path, "MCHA_API_KEY").as_deref(),
             Some("新的")
         );
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1122,7 +1122,7 @@ mod tests {
             text.contains("# 注释保留") && text.contains("OTHER=1"),
             "无关行应保留"
         );
-        assert_eq!(text.matches("AGENT_API_KEY=").count(), 1, "原位替换不重复");
+        assert_eq!(text.matches("MCHA_API_KEY=").count(), 1, "原位替换不重复");
 
         write_env_file(&path, "EXTRA_KEY", "v2").unwrap();
         assert_eq!(

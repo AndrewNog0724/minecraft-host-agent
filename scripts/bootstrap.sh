@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "=== mc-host-agent 环境引导（Linux/macOS）==="
+echo "=== Minecraft Host Agent (MCHA) 环境引导（Linux/macOS）==="
 echo "仓库：$REPO_ROOT"
 
 # ---- 1. C/C++ 链接器（Rust 链接阶段依赖系统 cc） ----
@@ -40,18 +40,18 @@ else
 fi
 
 # ---- 3. 编译并安装本应用到 ~/.cargo/bin（天然在 PATH） ----
-echo "[..] 正在编译并安装 agent（cargo install --path .，首次约几分钟）..."
+echo "[..] 正在编译并安装 mcha（cargo install --path .，首次约几分钟）..."
 (cd "$REPO_ROOT" && cargo install --path .)
 
 # ---- 4. 验证与下一步 ----
-if command -v agent >/dev/null 2>&1; then
-    echo "[ok] agent 已可在任意目录直接调用：$(command -v agent)"
+if command -v mcha >/dev/null 2>&1; then
+    echo "[ok] mcha 已可在任意目录直接调用：$(command -v mcha)"
 else
-    echo "[!] agent 已装进 ~/.cargo/bin，但当前会话 PATH 未包含它。"
+    echo "[!] mcha 已装进 ~/.cargo/bin，但当前会话 PATH 未包含它。"
     echo "    新开一个终端窗口即可生效；或执行：export PATH=\"\$HOME/.cargo/bin:\$PATH\""
 fi
 
 echo
 echo "=== 下一步 ==="
-echo "  运行  agent setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
-echo "  然后  agent new     —— 一句话开服"
+echo "  运行  mcha setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
+echo "  然后  mcha new     —— 一句话开服"

@@ -343,7 +343,7 @@ fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError
         AccountPolicy::Online => vec![],
     };
     let props = format!(
-        "# by mc-host-agent\n\
+        "# by mcha\n\
          online-mode={online_mode}\n\
          white-list=true\n\
          enforce-whitelist=true\n\

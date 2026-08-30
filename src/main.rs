@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 /// 命令行参数。
 #[derive(Parser, Debug)]
 #[command(
-    name = "agent",
+    name = "mcha",
     version,
-    about = "MC 联机设施建设 Agent：一句话开服管家",
-    long_about = "面向 Minecraft Java 版好友联机场景的开服管家。\n用一句自然语言描述需求，本工具完成方案推导、服务端部署、Java 供给、内网穿透与故障诊断的全流程。"
+    about = "Minecraft Host Agent（MCHA）：一句话开服管家",
+    long_about = "Minecraft Host Agent（简称 MCHA）——面向 Minecraft Java 版好友联机场景的开服管家。\n用一句自然语言描述需求，本工具完成方案推导、服务端部署、Java 供给、内网穿透与故障诊断的全流程。"
 )]
 struct Cli {
     #[command(subcommand)]

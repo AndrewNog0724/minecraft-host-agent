@@ -1,4 +1,4 @@
-# MC 联机设施建设 Agent · 需求与设计文档
+# Minecraft Host Agent（MCHA）· 需求与设计文档
 
 - **版本**：v0.5（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
@@ -8,7 +8,7 @@
 
 **一句话**：面向 Minecraft Java Edition 好友联机场景的"开服管家"——玩家用一句自然语言描述需求，Agent 在本机完成从方案推导、服务端部署、内网穿透到故障诊断的全流程，交付一台朋友能直接连入的服务器，并把一切配置与开销记录在案。
 
-- **产品名**：暂定 `mc-host-agent`（正式名待定）
+- **产品名**：正式定名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（小写 `mcha`，决议 D15）
 - **形态**：本地运行的 Rust 单二进制，初版 CLI 交互式终端（界面形态见 §15 决议 D1）
 - **边界（只做这一件事）**：只服务"MC Java 版好友联机开服与维保"。不做通用聊天助手、不做服务器面板、不做基岩版服（跨平台见 §15 决议 D5）。
 
@@ -115,7 +115,7 @@
 | FR-15 | 用量与费用统计 | P0 | 每次调用 in / out token + 价格换算；预算上限、超限中断 | R6 |
 | FR-16 | 交互界面 | P0：CLI/TUI；P2：Web | 见决议 D1 | R2 |
 | FR-17 | 安全防护 | P0 | 危险操作二次确认；离线模式风险提示；密钥不落仓库 | — |
-| FR-18 | 上手引导与快速启动 | P1 | 环境引导脚本（`scripts/`，决议 D13）自动配置 Rust 工具链并安装本应用；`agent setup` 交互式向导完成配置 + 工作区设定 + 二进制注册；问答区分**必填 / 选填**（决议 D14） | R2/R3 |
+| FR-18 | 上手引导与快速启动 | P1 | 环境引导脚本（`scripts/`，决议 D13）自动配置 Rust 工具链并安装本应用；`mcha setup` 交互式向导完成配置 + 工作区设定 + 二进制注册；问答区分**必填 / 选填**（决议 D14） | R2/R3 |
 | FR-19 | 工作区可配置 | P1 | 服务端安装位置可由用户指定（交互向导 / `config set` / 环境变量），默认落在数据目录内 | R3 |
 
 ### 5.2 决策树（定制 1 的范围界定）
@@ -381,15 +381,15 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 
 ### 8.7 store / config / ui
 
-- `store`：数据目录 `~/.mc-host-agent/`（Windows 落 `%APPDATA%\mc-host-agent\`，决议 D4），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
-- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；新增 `[workspace]` 段（FR-19）：`path` 为空 = 默认 `<数据目录>/profiles/`，否则服务端安装到 `<workspace>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **环境变量 `MC_HOST_AGENT_WORKSPACE` > config.toml > 默认**；支持 `~` 展开与相对路径，加载时校验可写。
+- `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
+- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；新增 `[workspace]` 段（FR-19）：`path` 为空 = 默认 `<数据目录>/profiles/`，否则服务端安装到 `<workspace>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **环境变量 `MCHA_WORKSPACE` > config.toml > 默认**；支持 `~` 展开与相对路径，加载时校验可写。
 - `ui`：clap 子命令（`new` / `plan` / `diag` / `profiles` / `sessions` / `config` / `usage` / `setup`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
-  - `agent setup`（FR-18，决议 D12/D14）：一站式上手向导。问答**两段式**：
+  - `mcha setup`（FR-18，决议 D12/D14）：一站式上手向导。问答**两段式**：
     - **必填段**（不可跳过，缺项循环重问）：endpoint（预设快捷项：GLM bigmodel / DeepSeek / 自定义输入）→ 模型名 → API Key（隐藏输入，直写 `.env`）；每项配一行中文说明，不懂技术细节也能照着服务商控制台填。
     - **选填段**（先问"是否配置高级选项？"，默认否）：上下文长度 / 思考模式 / 请求超时 / 预算上限 / 代理 / Adoptium 镜像 / 工作区路径，逐项显示默认值，**回车 = 采用默认**。
     - 完成为可运行状态（当场调用 `validate()` 验证并提示下一步）；检测 `agent` 不在 PATH 时提供把当前 exe 复制到 `~/.cargo/bin`（Windows 同路径）并给出验证命令；`config wizard` 为其配置子集（不含二进制注册），可随时重跑。
   - 交互写回配置用 `toml_edit` 保留用户注释（决议 D12 注明的唯一新增依赖）。
-- **环境引导脚本**（FR-18，决议 D13）：安装 Rust 工具链这一步无法由本应用二进制承担（二进制尚不存在，先有鸡还是先有蛋），故由仓库内幂等脚本承担：`scripts/bootstrap-windows.ps1`（检测 → winget 装 rustup 与 VS Build Tools C++ 工作负载 → `cargo install --path .` → 提示运行 `agent setup`）与 `scripts/bootstrap.sh`（Linux/macOS，rustup 官方脚本 + cargo install）；全部步骤先检测后安装，重复执行无副作用；预编译二进制直发列为 P2 备选。**编码约束（Windows 实测勘误 2026-08-30）**：`.ps1` 含中文必须存为 **UTF-8 with BOM**——Windows PowerShell 5.1 对无 BOM 文件按系统 ANSI（中文系统为 GBK）解码，中文字节被误读并破坏字符串定界，产生连锁解析错误；BOM 对 PowerShell 7 亦兼容。
+- **环境引导脚本**（FR-18，决议 D13）：安装 Rust 工具链这一步无法由本应用二进制承担（二进制尚不存在，先有鸡还是先有蛋），故由仓库内幂等脚本承担：`scripts/bootstrap-windows.ps1`（检测 → winget 装 rustup 与 VS Build Tools C++ 工作负载 → `cargo install --path .` → 提示运行 `mcha setup`）与 `scripts/bootstrap.sh`（Linux/macOS，rustup 官方脚本 + cargo install）；全部步骤先检测后安装，重复执行无副作用；预编译二进制直发列为 P2 备选。**编码约束（Windows 实测勘误 2026-08-30）**：`.ps1` 含中文必须存为 **UTF-8 with BOM**——Windows PowerShell 5.1 对无 BOM 文件按系统 ANSI（中文系统为 GBK）解码，中文字节被误读并破坏字符串定界，产生连锁解析错误；BOM 对 PowerShell 7 亦兼容。
 
 ### 8.8 Java 自动供给（FR-02，决议 D2：不降级，全自动）
 
@@ -547,15 +547,16 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | D1 | 界面形态 | MVP 用 CLI/TUI；Web（只读状态页）列 P2，09-06 公开展示前评估 |
 | D2 | Java 供给 | **全自动受管安装，不降级**；设计见 §8.8 |
 | D3 | 价格表 | 内置常见模型预设随包分发，注明来源与更新日期，用户可覆盖 |
-| D4 | 数据目录 | `~/.mc-host-agent/`（Windows：`%APPDATA%\mc-host-agent\`） |
+| D4 | 数据目录 | `~/.mcha/`（Windows：`%APPDATA%\mcha\`；原名 `~/.mc-host-agent/`，D15 定名时统一更名，不迁移旧目录） |
 | D5 | 基岩跨平台 | 不做（边界外未来工作） |
 | D6 | 提案提交方式 | tool-calling（`submit_spec` 工具），不用 JSON mode |
 | D7 | Forge | MVP 不做；P2 或降级为安装指导 |
 | D8 | LLM SDK | 不引入，自研薄客户端 |
 | D9 | 内网穿透选型 | 樱花frp 为默认（国内节点、免 VPS、朋友零安装、API v4 可全自动编排）；自建 frp / Tailscale 为 P2 备选；playit 不做 |
 | D10 | 定制内容体系 | 五层载体（代码 / 数据 / API / 指南 / Prompt，另加确定性错误模式库）；版本事实不进 Prompt；不引入 RAG / embedding（枚举型小规模事实 + 决策树路由 + 成本考量），P2 扩充案例库再评估 |
-| D11 | 工作区解析 | 服务端安装位置：`MC_HOST_AGENT_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录 |
-| D12 | 上手引导 | 分发方式 `cargo install --path .`（装进 `~/.cargo/bin`，天然在 PATH）；`agent setup` 向导承担首次配置 + 工作区设定 + 可选二进制自复制注册；写回配置用 `toml_edit` 保注释；不做注册表 / shell profile 改写（答辩可解释性优先） |
+| D11 | 工作区解析 | 服务端安装位置：`MCHA_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录 |
+| D12 | 上手引导 | 分发方式 `cargo install --path .`（装进 `~/.cargo/bin`，天然在 PATH）；`mcha setup` 向导承担首次配置 + 工作区设定 + 可选二进制自复制注册；写回配置用 `toml_edit` 保注释；不做注册表 / shell profile 改写（答辩可解释性优先） |
+| D15 | 命名规范 | 正式名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/**mcha**（标识符）；Cargo 包名 `minecraft-host-agent`，二进制/CLI 命令 `mcha`；数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`）；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`；其余内部标识（User-Agent `mcha/0.1`、JRE 暂存 `mcha-jre`、探针 `.mcha-write-probe` 等）一律用小写前缀。**边界**：作为技术概念的 "Agent"（AI Agent、agent-core 模块、`agent.rs`、`RequirementAgent` 等类型名）不属于产品命名，不改。项目未发布，旧名不做兼容别名，不迁移旧数据目录 |
 | D13 | 环境引导脚本 | 装 Rust 工具链不能由本应用二进制承担（编译前二进制不存在），由 `scripts/bootstrap-windows.ps1`（winget 装 rustup + VS Build Tools）与 `scripts/bootstrap.sh` 幂等完成；预编译二进制直发为 P2 备选 |
 | D14 | 问答必填 / 选填分层 | 向导问答两段式：必填仅 3 项（endpoint / model / API Key），其余全部归入"高级选项"（默认否，逐项带默认值与说明，回车即过）；理由：目标用户含不懂技术细节的玩家，减少首跑门槛 |
 
@@ -592,3 +593,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.6 | 首次实测反馈迭代（FR-18/19，决议 D11/D12）：新增 `agent setup` 上手向导与 `config wizard` 交互配置；新增 `[workspace]` 可配置工作区；风险表新增 Windows 实测项；AGENTS.md 固化"文档先行"全局迭代规则 |
 | 2026-08-30 | v0.7 | 向导问答分层（FR-18 补充，决议 D14）：必填 3 项 + 高级选填段（回车即默认）；新增环境引导脚本设计（决议 D13，`scripts/bootstrap-windows.ps1` / `bootstrap.sh`）；仓库结构补 `scripts/` |
 | 2026-08-30 | v0.7.1 | Windows 实测勘误：`.ps1` 改存 UTF-8 with BOM，修复 Windows PowerShell 5.1 按 GBK 解码无 BOM 文件导致的连锁解析错误（§8.7 编码约束） |
+| 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |

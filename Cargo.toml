@@ -1,8 +1,13 @@
 [package]
-name = "agent"
+name = "minecraft-host-agent"
 version = "0.1.0"
 edition = "2024"
-description = "MC 联机设施建设 Agent：一句话开服管家（课程大作业）"
+description = "Minecraft Host Agent（MCHA）：一句话开服管家（课程大作业）"
+
+# 可执行文件名用小写简称（决议 D15）：安装后命令为 `mcha`
+[[bin]]
+name = "mcha"
+path = "src/main.rs"
 
 [dependencies]
 # 异步运行时（§10）：进程管理、CancellationToken（R4）
