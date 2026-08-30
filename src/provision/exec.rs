@@ -63,14 +63,15 @@ impl DeployContext {
         })
     }
 
-    fn profile_dir(&self, spec: &ServerSpec) -> PathBuf {
-        crate::config::data_dir()
-            .join("profiles")
-            .join(&spec.spec_id)
-    }
-
-    fn server_dir(&self, spec: &ServerSpec) -> PathBuf {
-        self.profile_dir(spec).join("server")
+    /// 服务端安装目录（FR-19，决议 D11）：`<工作区>/<spec_id>/server`。
+    /// 工作区解析（env > config > 默认数据目录）与可写性校验由 config 负责；
+    /// 档案元数据 spec.json 仍统一存数据目录（store::save_profile），互不影响。
+    fn server_dir(&self, spec: &ServerSpec) -> Result<PathBuf, DeployError> {
+        let root = self
+            .cfg
+            .workspace_dir()
+            .map_err(|e| DeployError::Preflight(e.to_string()))?;
+        Ok(root.join(&spec.spec_id).join("server"))
     }
 }
 
@@ -122,7 +123,7 @@ pub async fn deploy(
     // 服务端主 jar 下载（官方渠道 + 哈希校验）
     step_begin(ctx, task_id, "download", "获取服务端");
     let jar_item = server_jar_item(spec, ctx).await?;
-    let server_dir = ctx.server_dir(spec);
+    let server_dir = ctx.server_dir(spec)?;
     let jar_path = download(ctx, task_id, "download", &jar_item, &server_dir).await?;
     step_done(
         ctx,

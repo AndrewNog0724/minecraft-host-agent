@@ -35,6 +35,11 @@ pub enum ConfigError {
     Missing(String),
     #[error("配置项取值非法：{0}")]
     Invalid(String),
+    #[error("工作区目录 {path} 不可用：{source}")]
+    Workspace {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// 模型配置（R3 核心项）。
@@ -148,6 +153,15 @@ pub struct TunnelConfig {
     pub natfrp_token: String,
 }
 
+/// 工作区配置（FR-19，决议 D11）：服务端安装位置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkspaceConfig {
+    /// 服务端安装根目录；空 = 默认 `<数据目录>/profiles/`。
+    /// 支持 `~` 展开与相对路径（相对当前工作目录）。
+    #[serde(default)]
+    pub path: String,
+}
+
 /// 聚合配置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -162,6 +176,8 @@ pub struct AppConfig {
     pub network: NetworkConfig,
     #[serde(default)]
     pub tunnel: TunnelConfig,
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
 }
 
 /// 数据目录定位（决议 D4）。
@@ -184,7 +200,55 @@ pub fn config_path() -> PathBuf {
     data_dir().join(CONFIG_FILE)
 }
 
+/// 工作区环境变量（决议 D11：优先级高于 config.toml）。
+pub const ENV_WORKSPACE: &str = "MC_HOST_AGENT_WORKSPACE";
+
+/// 展开 `~` 开头的路径（决议 D11）：Windows 用 %USERPROFILE%，其余用 $HOME。
+pub fn expand_tilde(raw: &str) -> PathBuf {
+    fn home() -> Option<PathBuf> {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+    }
+    if raw == "~" {
+        return home().unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\"))
+        && let Some(h) = home()
+    {
+        return h.join(rest);
+    }
+    PathBuf::from(raw)
+}
+
 impl AppConfig {
+    /// 工作区解析（FR-19，决议 D11）。
+    /// 优先级：环境变量 `MC_HOST_AGENT_WORKSPACE` > config `[workspace] path` > 默认 `<数据目录>/profiles`。
+    /// 返回已创建且验证可写的绝对/相对路径；`~` 展开后交由文件系统解释。
+    pub fn workspace_dir(&self) -> Result<PathBuf, ConfigError> {
+        let configured = std::env::var(ENV_WORKSPACE)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| self.workspace.path.clone());
+        let dir = if configured.trim().is_empty() {
+            data_dir().join("profiles")
+        } else {
+            expand_tilde(configured.trim())
+        };
+        std::fs::create_dir_all(&dir).map_err(|source| ConfigError::Workspace {
+            path: dir.clone(),
+            source,
+        })?;
+        // 可写性探针：Windows 的只读属性对目录不可靠，跨平台统一用临时文件验证
+        let probe = dir.join(".mc-host-agent-write-probe");
+        std::fs::write(&probe, b"").map_err(|source| ConfigError::Workspace {
+            path: dir.clone(),
+            source,
+        })?;
+        let _ = std::fs::remove_file(&probe);
+        Ok(dir)
+    }
+
     /// 加载配置：确保数据目录存在；config.toml 缺失时生成带注释模板；
     /// 同时加载 .env（存在则注入进程环境，供 API Key 读取）。
     pub fn load() -> Result<Self, ConfigError> {
@@ -359,6 +423,12 @@ proxy = ""
 # 内网穿透（P1 樱花frp）：访问密钥见管理面板，仅存本地。
 [tunnel]
 natfrp_token = ""
+
+# 工作区（FR-19）：服务端安装根目录。留空 = 默认数据目录内 profiles/。
+# 支持 ~ 展开（Windows 为用户主目录）与相对路径；也可用环境变量
+# MC_HOST_AGENT_WORKSPACE 覆盖（优先级更高）。
+[workspace]
+path = ""
 "#,
         env_key = ENV_API_KEY,
     )
@@ -395,6 +465,17 @@ impl fmt::Display for AppConfig {
             } else {
                 "<已配置>"
             }
+        )?;
+        writeln!(f)?;
+        writeln!(f, "[workspace]")?;
+        write!(
+            f,
+            "path = {}",
+            if self.workspace.path.is_empty() {
+                "<默认：数据目录内 profiles/>"
+            } else {
+                &self.workspace.path
+            }
         )
     }
 }
@@ -426,5 +507,63 @@ mod tests {
         let cfg: AppConfig = toml::from_str(&render_template()).unwrap();
         assert_eq!(cfg.model.model, "glm-5.2");
         assert_eq!(cfg.model.context_len, 128_000);
+    }
+
+    /// 涉及 ENV_WORKSPACE 的用例共享一把锁：std::env 是进程级全局，
+    /// cargo test 默认多线程并行，不串行化会互相污染。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn 工作区默认落在数据目录() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(ENV_WORKSPACE) };
+        let cfg = AppConfig::default();
+        let dir = cfg.workspace_dir().unwrap();
+        assert_eq!(dir, data_dir().join("profiles"));
+    }
+
+    #[test]
+    fn 工作区可配置且探针可写() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = AppConfig {
+            workspace: WorkspaceConfig {
+                path: tmp.path().join("servers").to_string_lossy().to_string(),
+            },
+            ..AppConfig::default()
+        };
+        let dir = cfg.workspace_dir().unwrap();
+        assert!(dir.starts_with(tmp.path()));
+        // 探针已清理，目录真实可写
+        assert!(!dir.join(".mc-host-agent-write-probe").exists());
+    }
+
+    #[test]
+    fn 环境变量优先于配置文件() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY：持有 ENV_LOCK，与其它读写该环境变量的用例互斥
+        unsafe {
+            std::env::set_var(
+                ENV_WORKSPACE,
+                tmp.path().join("from-env").to_string_lossy().to_string(),
+            )
+        };
+        let cfg = AppConfig {
+            workspace: WorkspaceConfig {
+                path: "/should-not-be-used".to_string(),
+            },
+            ..AppConfig::default()
+        };
+        let dir = cfg.workspace_dir().unwrap();
+        assert!(dir.ends_with("from-env"));
+        assert!(!dir.starts_with("/should-not-be-used"));
+        unsafe { std::env::remove_var(ENV_WORKSPACE) };
+    }
+
+    #[test]
+    fn 波浪号展开() {
+        let expanded = expand_tilde("~/mc-servers");
+        assert!(!expanded.starts_with("~"), "~ 应被展开为主目录下的子路径");
+        assert_eq!(expand_tilde("/plain/path"), PathBuf::from("/plain/path"));
     }
 }

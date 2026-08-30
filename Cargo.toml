@@ -16,6 +16,8 @@ futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+# 配置写回（FR-18）：编辑时保留用户注释与排版（决议 D12）
+toml_edit = "0.23"
 # Schema 派生与校验：从类型派生 JSON Schema 约束 LLM 输出
 schemars = "1"
 jsonschema = "0.30"
