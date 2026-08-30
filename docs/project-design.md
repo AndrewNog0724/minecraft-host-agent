@@ -389,7 +389,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
     - **选填段**（先问"是否配置高级选项？"，默认否）：上下文长度 / 思考模式 / 请求超时 / 预算上限 / 代理 / Adoptium 镜像 / 工作区路径，逐项显示默认值，**回车 = 采用默认**。
     - 完成为可运行状态（当场调用 `validate()` 验证并提示下一步）；检测 `agent` 不在 PATH 时提供把当前 exe 复制到 `~/.cargo/bin`（Windows 同路径）并给出验证命令；`config wizard` 为其配置子集（不含二进制注册），可随时重跑。
   - 交互写回配置用 `toml_edit` 保留用户注释（决议 D12 注明的唯一新增依赖）。
-- **环境引导脚本**（FR-18，决议 D13）：安装 Rust 工具链这一步无法由本应用二进制承担（二进制尚不存在，先有鸡还是先有蛋），故由仓库内幂等脚本承担：`scripts/bootstrap-windows.ps1`（检测 → winget 装 rustup 与 VS Build Tools C++ 工作负载 → `cargo install --path .` → 提示运行 `agent setup`）与 `scripts/bootstrap.sh`（Linux/macOS，rustup 官方脚本 + cargo install）；全部步骤先检测后安装，重复执行无副作用；预编译二进制直发列为 P2 备选。
+- **环境引导脚本**（FR-18，决议 D13）：安装 Rust 工具链这一步无法由本应用二进制承担（二进制尚不存在，先有鸡还是先有蛋），故由仓库内幂等脚本承担：`scripts/bootstrap-windows.ps1`（检测 → winget 装 rustup 与 VS Build Tools C++ 工作负载 → `cargo install --path .` → 提示运行 `agent setup`）与 `scripts/bootstrap.sh`（Linux/macOS，rustup 官方脚本 + cargo install）；全部步骤先检测后安装，重复执行无副作用；预编译二进制直发列为 P2 备选。**编码约束（Windows 实测勘误 2026-08-30）**：`.ps1` 含中文必须存为 **UTF-8 with BOM**——Windows PowerShell 5.1 对无 BOM 文件按系统 ANSI（中文系统为 GBK）解码，中文字节被误读并破坏字符串定界，产生连锁解析错误；BOM 对 PowerShell 7 亦兼容。
 
 ### 8.8 Java 自动供给（FR-02，决议 D2：不降级，全自动）
 
@@ -591,3 +591,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-28 | v0.5 | M1 MVP 实现完成；新增 §14.1 上游 API 实测勘误（Paper fill v3 / Adoptium feature_releases / Modrinth project_id / TUNA 镜像）；仓库结构更新为实际代码布局（spec.rs 独立成模块） |
 | 2026-08-30 | v0.6 | 首次实测反馈迭代（FR-18/19，决议 D11/D12）：新增 `agent setup` 上手向导与 `config wizard` 交互配置；新增 `[workspace]` 可配置工作区；风险表新增 Windows 实测项；AGENTS.md 固化"文档先行"全局迭代规则 |
 | 2026-08-30 | v0.7 | 向导问答分层（FR-18 补充，决议 D14）：必填 3 项 + 高级选填段（回车即默认）；新增环境引导脚本设计（决议 D13，`scripts/bootstrap-windows.ps1` / `bootstrap.sh`）；仓库结构补 `scripts/` |
+| 2026-08-30 | v0.7.1 | Windows 实测勘误：`.ps1` 改存 UTF-8 with BOM，修复 Windows PowerShell 5.1 按 GBK 解码无 BOM 文件导致的连锁解析错误（§8.7 编码约束） |

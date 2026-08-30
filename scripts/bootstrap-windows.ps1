@@ -1,4 +1,4 @@
-# 环境引导脚本（FR-18，决议 D13）：Windows 一键搭好 Rust 工具链并安装本应用。
+﻿# 环境引导脚本（FR-18，决议 D13）：Windows 一键搭好 Rust 工具链并安装本应用。
 #
 # 用法（PowerShell，无需管理员；VS Build Tools 安装器自行请求提权）：
 #   powershell -ExecutionPolicy Bypass -File scripts\bootstrap-windows.ps1
