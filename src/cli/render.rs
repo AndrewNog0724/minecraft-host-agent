@@ -20,8 +20,10 @@ pub async fn pump(
     bars: MultiProgress,
     backup: SessionBackup,
 ) -> Result<(), tokio::sync::broadcast::error::RecvError> {
-    // step_id → 进度条
+    // step_id → 进度条（决议 D19：完成即收起并落滚动摘要行，进度条只表达"进行中"）
     let mut step_bars: HashMap<String, ProgressBar> = HashMap::new();
+    // step_id → 标题（StepFinished 只有 id，滚动摘要行需要标题）
+    let mut step_titles: HashMap<String, String> = HashMap::new();
     // 任务轨迹由泵持有并落盘（R5 的"非黑盒"主体）
     let mut trace: Option<TaskTrace> = None;
     // 本次会话累计费用展示（泵内本地累计；落盘账本 read_usage 是跨任务终身账，
@@ -34,7 +36,7 @@ pub async fn pump(
     loop {
         let event = rx.recv().await?;
         match event {
-            AppEvent::Progress(p) => handle_progress(&bars, &mut step_bars, &p),
+            AppEvent::Progress(p) => handle_progress(&bars, &mut step_bars, &mut step_titles, &p),
             AppEvent::Usage(u) => {
                 let _ = store.append_usage(&u);
                 session_cost += u.cost;
@@ -87,20 +89,25 @@ pub async fn pump(
                         }),
                     );
                 }
-                TraceEvent::TaskFinished { task_id, status } => {
+                TraceEvent::TaskFinished {
+                    task_id,
+                    status,
+                    error,
+                } => {
                     if let Some(tr) = trace.as_mut() {
                         tr.status = status;
                         tr.finished_at = Some(chrono::Local::now());
+                        tr.error = error.clone();
                         let _ = store.save_trace(tr);
                         backup.save_trace(tr);
                     }
                     let _ = store.append_event(
                         &task_id,
-                        &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
+                        &serde_json::json!({"event": "task_finished", "status": status, "error": error, "at": chrono::Local::now().to_rfc3339()}),
                     );
                     backup.append_event(
                         &task_id,
-                        &serde_json::json!({"event": "task_finished", "status": status, "at": chrono::Local::now().to_rfc3339()}),
+                        &serde_json::json!({"event": "task_finished", "status": status, "error": error, "at": chrono::Local::now().to_rfc3339()}),
                     );
                     return Ok(());
                 }
@@ -130,6 +137,7 @@ fn bar_style() -> ProgressStyle {
 fn handle_progress(
     bars: &MultiProgress,
     step_bars: &mut HashMap<String, ProgressBar>,
+    step_titles: &mut HashMap<String, String>,
     p: &ProgressEvent,
 ) {
     match p {
@@ -139,6 +147,7 @@ fn handle_progress(
             bar.set_style(spinner_style());
             bar.set_message(title.clone());
             step_bars.insert(step.clone(), bar);
+            step_titles.insert(step.clone(), title.clone());
         }
         ProgressEvent::StepProgress {
             step,
@@ -165,14 +174,29 @@ fn handle_progress(
         ProgressEvent::StepFinished {
             step, ok, detail, ..
         } => {
+            // 决议 D19：进度条原地收起，改在滚动区落一行摘要——
+            // 进度条消息转瞬即逝，滚动行才是用户回头可查的记录
             if let Some(bar) = step_bars.remove(step) {
-                let mark = if *ok { "✔" } else { "✘" };
-                bar.finish_with_message(format!("{mark} {}", detail.clone().unwrap_or_default()));
+                bar.finish_and_clear();
+            }
+            let title = step_titles.remove(step).unwrap_or_else(|| step.clone());
+            let mark = if *ok { "✔" } else { "✘" };
+            match detail {
+                Some(d) if !d.is_empty() => {
+                    let _ = bars.println(format!("{mark} {title}：{d}"));
+                }
+                _ => {
+                    let _ = bars.println(format!("{mark} {title}"));
+                }
             }
         }
         ProgressEvent::Notice { text, .. } => {
             // 直显消息（模型澄清文本等）：挂起进度条原样打印，避免交错（决议 D17）
             let _ = bars.println(text);
+        }
+        ProgressEvent::LogLine { line, .. } => {
+            // 服务端日志行直显（决议 D19）：滚动打印，构成启动过程留痕
+            let _ = bars.println(format!("  {line}"));
         }
     }
 }

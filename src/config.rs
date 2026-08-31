@@ -153,13 +153,34 @@ pub struct TunnelConfig {
     pub natfrp_token: String,
 }
 
-/// 工作区配置（FR-19，决议 D11）：服务端安装位置。
+/// 工作区配置（FR-19，决议 D11/D18）：服务端安装位置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkspaceConfig {
-    /// 服务端安装根目录；空 = 默认 `<数据目录>/profiles/`。
+    /// 服务端安装根目录；空 = 默认**当前目录**（决议 D18；
+    /// 开服流程还会交互询问，本次输入优先级最高）。
     /// 支持 `~` 展开与相对路径（相对当前工作目录）。
     #[serde(default)]
     pub path: String,
+}
+
+/// 部署执行配置（决议 D19）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployConfig {
+    /// 服务端就绪检测上限（秒）：超时即判启动失败，避免无限静默等待。
+    #[serde(default = "default_ready_timeout_secs")]
+    pub ready_timeout_secs: u64,
+}
+
+fn default_ready_timeout_secs() -> u64 {
+    240
+}
+
+impl Default for DeployConfig {
+    fn default() -> Self {
+        Self {
+            ready_timeout_secs: default_ready_timeout_secs(),
+        }
+    }
 }
 
 /// 聚合配置。
@@ -178,6 +199,8 @@ pub struct AppConfig {
     pub tunnel: TunnelConfig,
     #[serde(default)]
     pub workspace: WorkspaceConfig,
+    #[serde(default)]
+    pub deploy: DeployConfig,
 }
 
 /// 数据目录定位（决议 D4）。
@@ -222,18 +245,20 @@ pub fn expand_tilde(raw: &str) -> PathBuf {
 }
 
 impl AppConfig {
-    /// 工作区解析（FR-19，决议 D11）。
-    /// 优先级：环境变量 `MCHA_WORKSPACE` > config `[workspace] path` > 默认 `<数据目录>/profiles`。
-    /// 返回已创建且验证可写的绝对/相对路径；`~` 展开后交由文件系统解释。
+    /// 工作区解析（FR-19，决议 D11/D18）。
+    /// 优先级：环境变量 `MCHA_WORKSPACE` > config `[workspace] path` > 默认**当前目录**。
+    /// 返回已创建且验证可写的路径；`~` 展开后交由文件系统解释。
     pub fn workspace_dir(&self) -> Result<PathBuf, ConfigError> {
         let configured = std::env::var(ENV_WORKSPACE)
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| self.workspace.path.clone());
-        let dir = if configured.trim().is_empty() {
-            data_dir().join("profiles")
-        } else {
-            expand_tilde(configured.trim())
+        let dir = match configured.trim() {
+            "" => std::env::current_dir().map_err(|source| ConfigError::Workspace {
+                path: PathBuf::from("."),
+                source,
+            })?,
+            non_empty => expand_tilde(non_empty),
         };
         std::fs::create_dir_all(&dir).map_err(|source| ConfigError::Workspace {
             path: dir.clone(),
@@ -424,11 +449,17 @@ proxy = ""
 [tunnel]
 natfrp_token = ""
 
-# 工作区（FR-19）：服务端安装根目录。留空 = 默认数据目录内 profiles/。
+# 工作区（FR-19，决议 D18）：服务端安装根目录。留空 = 运行 mcha 的当前目录
+#（开服流程还会交互询问，可逐次指定；想固定就填在这里）。
 # 支持 ~ 展开（Windows 为用户主目录）与相对路径；也可用环境变量
-# MCHA_WORKSPACE 覆盖（优先级更高）。
+# MCHA_WORKSPACE 覆盖（优先级更高，但低于开服时的交互输入）。
 [workspace]
 path = ""
+
+# 部署执行（决议 D19）：服务端就绪检测上限（秒）。
+# 超时即判定启动失败并附最近日志；首次开服生成世界较慢时可调大。
+[deploy]
+ready_timeout_secs = 240
 "#,
         env_key = ENV_API_KEY,
     )
@@ -472,11 +503,14 @@ impl fmt::Display for AppConfig {
             f,
             "path = {}",
             if self.workspace.path.is_empty() {
-                "<默认：数据目录内 profiles/>"
+                "<默认：当前目录>"
             } else {
                 &self.workspace.path
             }
-        )
+        )?;
+        writeln!(f)?;
+        writeln!(f, "[deploy]")?;
+        write!(f, "ready_timeout_secs = {}", self.deploy.ready_timeout_secs)
     }
 }
 
@@ -514,16 +548,30 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn 工作区默认落在数据目录() {
+    fn 工作区默认落在当前目录() {
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var(ENV_WORKSPACE) };
         let cfg = AppConfig::default();
         let dir = cfg.workspace_dir().unwrap();
-        assert_eq!(dir, data_dir().join("profiles"));
+        assert_eq!(
+            dir,
+            std::env::current_dir().unwrap(),
+            "决议 D18：默认当前目录"
+        );
+    }
+
+    #[test]
+    fn 部署配置模板解析与默认值() {
+        let cfg: AppConfig = toml::from_str(&render_template()).unwrap();
+        assert_eq!(cfg.deploy.ready_timeout_secs, 240);
+        let empty: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(empty.deploy.ready_timeout_secs, 240, "缺段应回默认值");
     }
 
     #[test]
     fn 工作区可配置且探针可写() {
+        // workspace_dir() 会读 ENV_WORKSPACE：必须持锁，避免与其它 env 用例互扰
+        let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let cfg = AppConfig {
             workspace: WorkspaceConfig {

@@ -22,8 +22,8 @@
 - [x] **R1 核心逻辑用 Rust 实现**：决策树、执行流水线、全部 API 编排、进程与文件管理均在 Rust 单二进制内；LLM 客户端亦为自研薄实现（reqwest + SSE）
 - [x] **R2 用户交互界面**：CLI 交互式终端（clap + dialoguer + indicatif），`mcha new` 触发开服任务
 - [x] **R3 可自定义模型配置**：`config.toml` + `.env`，支持 Endpoint / API Key / 上下文长度 / 思考模式 / 价格表（内置常见模型预设）与 `config set` 改写
-- [x] **R4 实时进度渲染与打断**：下载字节进度、步骤进度条、日志滚动；Ctrl-C 经 CancellationToken 干净退出，不留孤儿进程
-- [x] **R5 上下文历史管理**：任务轨迹逐轮落盘（`sessions/`），可查看（`sessions show`）、导出（`sessions export`，自动打码）；开服档案可保存 / 加载（`profiles/`）
+- [x] **R4 实时进度渲染与打断**：下载字节进度、步骤进度条、模型文本与开服日志滚动直显、就绪等待计时（上限可配置 `[deploy] ready_timeout_secs`）；Ctrl-C 经 CancellationToken 干净退出，不留孤儿进程
+- [x] **R5 上下文历史管理**：任务轨迹逐轮落盘（`sessions/`，LLM 与部署执行步骤齐备，失败原因随轨迹落盘），可查看（`sessions show`）、导出（`sessions export`，自动打码）；服务端启动日志落盘 `<安装目录>/<spec_id>/server/mcha-launch.log`；开服档案可保存 / 加载（`profiles/`）
 - [x] **R6 Token 用量与价格统计**：每次调用强制生成 UsageRecord（无 usage 的上游记次数并标注），按价格表换算费用，`usage` 汇总展示，预算超限自动中断
 
 ## 环境要求
@@ -99,7 +99,7 @@ cargo run --release -- config set model.thinking true  # 思考模式（视模�
 cargo run --release -- config set workspace.path D:\mc-servers  # 服务端安装根目录（FR-19）
 ```
 
-**工作区**（FR-19）：服务端安装位置可配置，优先级为环境变量 `MCHA_WORKSPACE` > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开（Windows 为用户主目录）与相对路径。开服档案元数据始终存于数据目录。
+**工作区**（FR-19）：服务端安装位置在开服流程中会**交互询问**（默认当前目录，并显示来源注记）；也可预设，优先级为**开服时交互输入** > 环境变量 `MCHA_WORKSPACE` > `config.toml [workspace] path` > 默认当前目录。支持 `~` 展开（Windows 为用户主目录）与相对路径。开服档案元数据始终存于数据目录；Java 运行时始终装在数据目录受管位置，不污染系统。
 
 国内网络建议启用 Adoptium 镜像（`[network]` 节，模板内有现成注释行）：
 

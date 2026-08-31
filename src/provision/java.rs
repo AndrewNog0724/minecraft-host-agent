@@ -118,6 +118,8 @@ pub fn managed_java_path(runtime: &JavaRuntime) -> Option<String> {
 }
 
 /// 主入口：按 §8.8 选择顺序拿到满足 `required_major` 的 Java 运行时。
+/// 步骤的开始/结束事件由调用方（exec::deploy）统一发布；本函数只发过程性
+/// StepProgress（渠道、字节进度等），避免同名步骤的双重进度条（v0.10）。
 pub async fn resolve_java(
     required_major: u8,
     cfg: &crate::config::AppConfig,
@@ -130,24 +132,12 @@ pub async fn resolve_java(
     let step = "java";
 
     // ① 系统 PATH
-    bus.publish(ProgressEvent::StepStarted {
-        task_id: task_id.into(),
-        step: step.into(),
-        title: format!("探测系统 Java（需要 Java {required_major}）"),
-    });
     match probe_system_java().await {
         Ok(Some((path, version, major))) if major == required_major => {
-            let runtime = JavaRuntime::System {
+            return Ok(JavaRuntime::System {
                 path,
                 version: version.clone(),
-            };
-            bus.publish(ProgressEvent::StepFinished {
-                task_id: task_id.into(),
-                step: step.into(),
-                ok: true,
-                detail: Some(format!("使用系统 Java {version}")),
             });
-            return Ok(runtime);
         }
         Ok(found) => {
             let detail = found
@@ -166,12 +156,6 @@ pub async fn resolve_java(
 
     // ② 受管目录复用
     if let Some((path, dir_name)) = find_managed_java(data_dir, required_major) {
-        bus.publish(ProgressEvent::StepFinished {
-            task_id: task_id.into(),
-            step: step.into(),
-            ok: true,
-            detail: Some(format!("复用受管 JRE：{}", dir_name)),
-        });
         return Ok(JavaRuntime::Managed {
             path: path.to_string_lossy().to_string(),
             vendor: VENDOR.into(),
@@ -284,12 +268,6 @@ pub async fn resolve_java(
     let _ = tokio::fs::remove_file(&zip_path).await; // 清理临时 zip，失败不影响结果
 
     let java_path = locate_java_binary(&dest_dir).ok_or(JavaError::JavaBinaryNotFound)?;
-    bus.publish(ProgressEvent::StepFinished {
-        task_id: task_id.into(),
-        step: step.into(),
-        ok: true,
-        detail: Some(format!("已安装受管 JRE：{}", java_path.display())),
-    });
     Ok(JavaRuntime::Managed {
         path: java_path.to_string_lossy().to_string(),
         vendor: VENDOR.into(),

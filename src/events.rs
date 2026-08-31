@@ -40,6 +40,12 @@ pub enum ProgressEvent {
     /// 面向用户的直显消息（模型澄清文本、待确认问题等，决议 D17）。
     /// 渲染层经 MultiProgress::println 原样打印，不进进度条。
     Notice { task_id: TaskId, text: String },
+    /// 服务端日志行直显（决议 D19）：渲染层滚动打印，构成启动过程留痕。
+    LogLine {
+        task_id: TaskId,
+        step: String,
+        line: String,
+    },
 }
 
 /// LLM 调用阶段（R6 按阶段汇总用）。
@@ -116,6 +122,9 @@ pub struct TaskTrace {
     pub finished_at: Option<DateTime<Local>>,
     pub steps: Vec<TraceStep>,
     pub status: TaskStatus,
+    /// 失败原因摘要（决议 D19）：sessions show / 导出可见，不再只有 stderr 一闪而过
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 impl TaskTrace {
@@ -128,6 +137,7 @@ impl TaskTrace {
             finished_at: None,
             steps: Vec::new(),
             status: TaskStatus::Running,
+            error: None,
         }
     }
 }
@@ -153,6 +163,8 @@ pub enum TraceEvent {
     TaskFinished {
         task_id: TaskId,
         status: TaskStatus,
+        /// 失败原因摘要（决议 D19）；成功 / 取消为 None
+        error: Option<String>,
     },
     /// 需求理解环的完整对话消息（决议 D16：失败留痕；成功也落盘供 R5 查看）。
     SessionMessages {

@@ -102,7 +102,7 @@ async fn cmd_new(
     cancel: CancellationToken,
     bus: EventBus,
 ) -> anyhow::Result<()> {
-    let cfg = AppConfig::load().context("加载配置失败")?;
+    let mut cfg = AppConfig::load().context("加载配置失败")?;
     let kb = KnowledgeBase::embedded().context("加载知识库失败")?;
     let store = Arc::new(Store::open().context("打开数据目录失败")?);
     let bars = indicatif::MultiProgress::new();
@@ -154,6 +154,7 @@ async fn cmd_new(
             bus.publish(TraceEvent::TaskFinished {
                 task_id: task_id.clone(),
                 status: TaskStatus::Failed,
+                error: Some(format!("需求理解失败：{e}")),
             });
             anyhow::anyhow!("需求理解失败：{e}")
         })?;
@@ -190,8 +191,19 @@ async fn cmd_new(
         bail!("澄清超过 3 轮仍未齐备，请用更完整的描述重试");
     };
 
-    // 5. 方案摘要 + 风险提示 + 确认（FR-17）
+    // 5. 方案摘要 + 安装目录确认（FR-17/FR-19，决议 D18）+ 风险提示 + 确认
     print_spec_summary(&spec);
+    // 决议 D18：开服前交互确认安装目录，默认当前目录；--yes（演示/CI）跳过
+    if !yes {
+        cfg.workspace.path = tokio::task::block_in_place(|| ask_workspace_dir(&cfg))?;
+    }
+    let install_dir = cfg.workspace_dir().context("解析安装目录失败")?;
+    let install_dir = if install_dir.is_absolute() {
+        install_dir
+    } else {
+        std::env::current_dir()?.join(install_dir)
+    };
+    println!("安装位置：{}", install_dir.display());
     let confirmed = yes
         || tokio::task::block_in_place(|| {
             Confirm::new()
@@ -203,6 +215,7 @@ async fn cmd_new(
         bus.publish(TraceEvent::TaskFinished {
             task_id,
             status: TaskStatus::Cancelled,
+            error: None,
         });
         let _ = pump_task.await;
         bail!("已取消");
@@ -230,6 +243,7 @@ async fn cmd_new(
             bus.publish(TraceEvent::TaskFinished {
                 task_id: task_id.clone(),
                 status: TaskStatus::Done,
+                error: None,
             });
             // 服务器保持运行，等用户 Ctrl-C
             println!("服务器运行中；按 Ctrl-C 停止服务端并退出。");
@@ -245,14 +259,44 @@ async fn cmd_new(
             } else {
                 TaskStatus::Failed
             };
+            // 决议 D19：失败原因随事件落盘（events.jsonl + TaskTrace.error），
+            // 不再只打一次 stderr 了事
             bus.publish(TraceEvent::TaskFinished {
                 task_id: task_id.clone(),
                 status,
+                error: Some(e.to_string()),
             });
             return Err(e.into());
         }
     }
     Ok(())
+}
+
+/// 开服前询问安装目录（决议 D18）：默认值按 `MCHA_WORKSPACE` > config > 当前目录，
+/// 显示来源注记；本次输入仅对本次运行生效（不写回 config.toml，固定目录走向导）。
+fn ask_workspace_dir(cfg: &AppConfig) -> anyhow::Result<String> {
+    let env_val = std::env::var(crate::config::ENV_WORKSPACE)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let (default, source) = if let Some(v) = env_val {
+        (v, "环境变量 MCHA_WORKSPACE")
+    } else if !cfg.workspace.path.trim().is_empty() {
+        (cfg.workspace.path.clone(), "config.toml [workspace]")
+    } else {
+        (
+            std::env::current_dir()
+                .map(|d| d.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            "当前目录",
+        )
+    };
+    let input: String = Input::new()
+        .with_prompt(format!("服务端安装目录（回车 = {source}）"))
+        .default(default)
+        .show_default(false)
+        .interact_text()
+        .context("读取输入失败")?;
+    Ok(input.trim().to_string())
 }
 
 /// 澄清问答：把 Question 渲染为交互控件，产出 Answers。
@@ -405,7 +449,7 @@ fn print_spec_summary(spec: &ServerSpec) {
 
 /// 手动方案（plan）：跳过 LLM，逐项输入后复用决策树与流水线。
 async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()> {
-    let cfg = AppConfig::load()?;
+    let mut cfg = AppConfig::load()?;
     let kb = KnowledgeBase::embedded()?;
     let store = Arc::new(Store::open()?);
     let bars = indicatif::MultiProgress::new();
@@ -487,6 +531,15 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
     };
 
     print_spec_summary(&spec);
+    // 决议 D18：同 cmd_new，开服前确认安装目录（默认当前目录）
+    cfg.workspace.path = tokio::task::block_in_place(|| ask_workspace_dir(&cfg))?;
+    let install_dir = cfg.workspace_dir().context("解析安装目录失败")?;
+    let install_dir = if install_dir.is_absolute() {
+        install_dir
+    } else {
+        std::env::current_dir()?.join(install_dir)
+    };
+    println!("安装位置：{}", install_dir.display());
     if !tokio::task::block_in_place(|| {
         Confirm::new()
             .with_prompt("确认开服？")
@@ -522,6 +575,7 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
             bus.publish(TraceEvent::TaskFinished {
                 task_id,
                 status: TaskStatus::Done,
+                error: None,
             });
             println!("服务器运行中；按 Ctrl-C 停止。");
             tokio::select! { _ = cancel.cancelled() => {} }
@@ -531,6 +585,7 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
             bus.publish(TraceEvent::TaskFinished {
                 task_id,
                 status: TaskStatus::Failed,
+                error: Some(e.to_string()),
             });
             return Err(e.into());
         }
@@ -594,6 +649,9 @@ fn cmd_sessions(action: SessionsAction) -> anyhow::Result<()> {
             println!("步骤（{} 条）：", trace.steps.len());
             for (i, step) in trace.steps.iter().enumerate() {
                 println!("  {:>2}. [{:?}] {}", i + 1, step.kind, step.summary);
+            }
+            if let Some(err) = &trace.error {
+                println!("失败原因：{err}");
             }
         }
         SessionsAction::Export { task_id } => {

@@ -116,7 +116,7 @@
 | FR-16 | 交互界面 | P0：CLI/TUI；P2：Web | 见决议 D1 | R2 |
 | FR-17 | 安全防护 | P0 | 危险操作二次确认；离线模式风险提示；密钥不落仓库 | — |
 | FR-18 | 上手引导与快速启动 | P1 | 环境引导脚本（`scripts/`，决议 D13）自动配置 Rust 工具链并安装本应用；`mcha setup` 交互式向导完成配置 + 工作区设定 + 二进制注册；问答区分**必填 / 选填**（决议 D14） | R2/R3 |
-| FR-19 | 工作区可配置 | P1 | 服务端安装位置可由用户指定（交互向导 / `config set` / 环境变量），默认落在数据目录内 | R3 |
+| FR-19 | 工作区可配置 | P1 | 服务端安装位置在开服流程开始执行前**交互询问**（默认当前目录，决议 D18 修订）；亦可通过 `config set` / 环境变量预设，本次交互输入优先级最高 | R3 |
 
 ### 5.2 决策树（定制 1 的范围界定）
 
@@ -269,6 +269,8 @@ enum ProgressEvent {
     StepStarted { task_id, step: StepId, title: String },
     StepProgress { task_id, step: StepId, current: u64, total: Option<u64> },  // 如 45/120MB
     StepFinished { task_id, step: StepId, ok: bool, detail: Option<String> },
+    Notice { task_id, text },        // 模型澄清文本等直显消息（D17）
+    LogLine { task_id, step, line }, // 服务端日志行直显（D19），渲染层原样滚动打印
 }
 
 /// 单次 LLM 调用计量（R6 数据基础；由 llm 模块强制生成）
@@ -286,6 +288,7 @@ struct TaskTrace {
     started_at: DateTime, finished_at: Option<DateTime>,
     steps: Vec<TraceStep>,       // TraceStep{kind: Llm|Tool|Decision|Exec, summary, usage_refs}
     status: Running | Done | Failed | Cancelled,
+    error: Option<String>,       // 失败原因摘要（D19；sessions show / 导出可见）
 }
 ```
 
@@ -322,7 +325,13 @@ struct TaskTrace {
 
 - 决策树引擎：节点为 `enum DecisionNode`（显式穷举 §5.2 分支），每节点 = 检测函数 + 规则 + 对 `ServerSpec` 的增量写入；信息不足返回 `Missing(NodeId)` 生成澄清问题。**不引入通用规则引擎**——枚举穷举可逐节点解释（NFR-5）。
 - 执行流水线：步骤即事务边界——先落盘意图再执行，失败从已完成步骤续跑；下载断点续传 + 哈希校验。
-- 进程管理：`tokio::process` 起服务端，stdout 行流解析就绪标记；进程句柄 Drop 守卫——取消时先停服务端再退出（R4 打断语义，不留孤儿进程）。
+- **执行阶段可观测性（决议 D19，v0.9.6 后实测反馈：下载完成后终端静默 4 分钟、trace 只有 LLM 步、失败原因无处可查）**：
+  1. **Exec 轨迹补全**：执行流水线每个步骤（preflight / java / download / mods / config / launch）开始与结束时发布 `TraceStep(kind: Exec)`——`TraceKind::Exec` 不再是死定义；步骤中途失败时以失败摘要收尾该步骤，`TraceKind::Decision` 由决策树节点判定补发；
+  2. **服务端输出全量接管**：`stdout` 与 **`stderr` 同时并读**（此前 stderr 管道接而不读——JVM 崩溃信息走 stderr 全部丢失，且 64KB 管道缓冲区写满会卡死子进程直到就绪超时）；行级合并为统一日志流，stderr 行加 `[stderr]` 前缀；
+  3. **启动日志落盘**：全部输出实时写入 `<server_dir>/mcha-launch.log`；失败（就绪超时 / 提前退出）时错误消息附最近 15 行日志尾部，排障不再"可查看最新日志手动判断"却无处可看；
+  4. **就绪等待可感知**：等待期间周期性上报 `已等待 N/上限 秒`（进度条位置即剩余预算）；超时上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；
+  5. **失败留痕三件套**：`TaskFinished` 事件携带 error 摘要 → `events.jsonl` 与 `TaskTrace.error` 落盘 → `mcha sessions show` 与会话导出可见；不再只有 LLM 对话可查。
+- 进程管理：`tokio::process` 起服务端，stdout/stderr 行流解析就绪标记；进程句柄 Drop 守卫——取消时先停服务端再退出（R4 打断语义，不留孤儿进程）。
 
 ### 8.6 tunnel：内网穿透编排（默认樱花frp，P1）与 diagnose（P1）
 
@@ -389,13 +398,14 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 ### 8.7 store / config / ui
 
 - `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。**仓库会话备份**（v0.9.2 调试设施）：`SessionBackup` 把任务轨迹 / 对话原文 / 事件流镜像到 `<仓库>/session-backups/<task_id>/`（`MCHA_BACKUP_DIR` 可改向），随任务实时写入、失败只 warn；与数据目录 `sessions/`、仓库既有 `sessions/`（基线实验材料）互不影响，临时入库便于协作排障，问题定位后移除。
-- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；新增 `[workspace]` 段（FR-19）：`path` 为空 = 默认 `<数据目录>/profiles/`，否则服务端安装到 `<workspace>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **环境变量 `MCHA_WORKSPACE` > config.toml > 默认**；支持 `~` 展开与相对路径，加载时校验可写。
+- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；`[workspace]` 段（FR-19，**决议 D18 修订**）：服务端安装到 `<工作区>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **开服流程交互输入（D18）> 环境变量 `MCHA_WORKSPACE` > config.toml > 默认当前目录**；支持 `~` 展开与相对路径，使用时校验可写。`[deploy]` 段（D19）：`ready_timeout_secs`（服务端就绪检测上限，默认 240）。
 - `ui`：clap 子命令（`new` / `plan` / `diag` / `profiles` / `sessions` / `config` / `usage` / `setup`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
   - **需求理解阶段全程可视化（决议 D17，v0.8 实测反馈：LLM 阶段零进度输出，构成 R4 合规缺口）**：
     - agent 循环发布进度事件：进入需求理解 `StepStarted("需求理解中…")`；每轮 `StepProgress`（"第 N 轮：正在调用 check_version_compat / search_mods…"，含工具名）；交卷成功 `StepFinished("已收到方案草案")`——部署阶段已有的 ProgressEvent 机制直接复用，渲染泵不变；
-    - **模型自然语言输出直显**：`tool_calls` 为空轮的澄清文本打印到终端（当前实现只回传模型、用户不可见）；交卷后展示模型 questions 摘要；
+    - **模型自然语言输出直显（D17，D19 扩大范围）**：**所有轮次**的非空文本都直显（含伴随工具调用的说明文字——实测中模型惯用"我来核实一下版本…"这类过程叙述，只在此类轮次可见才能让用户理解 Agent 在干什么）；交卷后展示模型 questions 摘要；
     - **流式活动反馈**：SSE 消费中周期性上报"思考中…/已收 N 字"（思考模式下单次调用常超 30 秒，轮级粒度不够，这是 R4"实时渲染进度"在 LLM 阶段的正确落点）；
     - 费用行随 Usage 事件同时显示当次输入/输出 token 数。
+  - **部署阶段滚动留痕（决议 D19）**：步骤完成时进度条原地收起（`finish_and_clear`），改在滚动区落一行 `✔/✘ 步骤名：摘要`——进度条消息是"转瞬即逝"的，滚动行才是用户回头可查的记录；`LogLine` 事件（服务端日志）原样滚动打印；开服流程在方案确认环节交互询问**安装目录**（默认当前目录，显示来源注记），并在摘要后显式打印 `安装位置：<绝对路径>`。
   - `mcha setup`（FR-18，决议 D12/D14）：一站式上手向导。问答**两段式**：
     - **必填段**（不可跳过，缺项循环重问）：endpoint（预设快捷项：GLM bigmodel / DeepSeek / 自定义输入）→ 模型名 → API Key（隐藏输入，直写 `.env`）；每项配一行中文说明，不懂技术细节也能照着服务商控制台填。
     - **选填段**（先问"是否配置高级选项？"，默认否）：上下文长度 / 思考模式 / 请求超时 / 预算上限 / 代理 / Adoptium 镜像 / 工作区路径，逐项显示默认值，**回车 = 采用默认**。
@@ -459,8 +469,8 @@ enum JavaRuntime {
 | R1 Rust 主控 | 副作用不出 Rust（原则 1）；LLM 仅经自研 `llm` 客户端调用；全部编排、校验、执行在 Rust 单二进制内 |
 | R2 界面 | CLI/TUI（clap + dialoguer + indicatif）；P2 视进度以 axum + SSE 增只读 Web 状态页 |
 | R3 模型配置 | `config.toml` 的 `[model]`（endpoint / model / context_len / thinking）与 `[[prices]]` + 内置价格预设 + `.env` 的 key；`config set` 子命令改写 |
-| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新（含需求理解阶段轮次/工具/流式反馈，决议 D17）；Ctrl-C → CancellationToken → 流水线步骤间检查点 + 进程 Drop 守卫 |
-| R5 历史管理 | `profiles/`（ServerSpec+产物清单）、`sessions/`（TaskTrace 完整轨迹）、`usage/`；`sessions list/show/export` 查看、导出、导入 |
+| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新（含需求理解阶段轮次/工具/流式反馈，决议 D17；部署阶段 Exec 轨迹、服务端日志直显、就绪等待计时，决议 D19）；Ctrl-C → CancellationToken → 流水线步骤间检查点 + 进程 Drop 守卫 |
+| R5 历史管理 | `profiles/`（ServerSpec+产物清单）、`sessions/`（TaskTrace 完整轨迹，LLM 与 Exec 步骤齐备，失败原因入 error 字段——D19）、`usage/`；`sessions list/show/export` 查看、导出、导入 |
 | R6 用量统计 | `UsageRecord` 强制生成 + 价格换算；`usage` 按任务 / 阶段汇总；预算守卫调用前拦截，超限取消任务 |
 
 ## 10. 技术选型
@@ -568,11 +578,13 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | D8 | LLM SDK | 不引入，自研薄客户端 |
 | D9 | 内网穿透选型 | 樱花frp 为默认（国内节点、免 VPS、朋友零安装、API v4 可全自动编排）；自建 frp / Tailscale 为 P2 备选；playit 不做 |
 | D10 | 定制内容体系 | 五层载体（代码 / 数据 / API / 指南 / Prompt，另加确定性错误模式库）；版本事实不进 Prompt；不引入 RAG / embedding（枚举型小规模事实 + 决策树路由 + 成本考量），P2 扩充案例库再评估 |
-| D11 | 工作区解析 | 服务端安装位置：`MCHA_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录 |
+| D11 | 工作区解析 | 服务端安装位置：`MCHA_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录。**（D18 修订：默认目录改为当前目录，并新增开服前交互询问，见 D18）** |
 | D12 | 上手引导 | 分发方式 `cargo install --path .`（装进 `~/.cargo/bin`，天然在 PATH）；`mcha setup` 向导承担首次配置 + 工作区设定 + 可选二进制自复制注册；写回配置用 `toml_edit` 保注释；不做注册表 / shell profile 改写（答辩可解释性优先） |
 | D15 | 命名规范 | 正式名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/**mcha**（标识符）；Cargo 包名 `minecraft-host-agent`，二进制/CLI 命令 `mcha`；数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`）；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`；其余内部标识（User-Agent `mcha/0.1`、JRE 暂存 `mcha-jre`、探针 `.mcha-write-probe` 等）一律用小写前缀。**边界**：作为技术概念的 "Agent"（AI Agent、agent-core 模块、`agent.rs`、`RequirementAgent` 等类型名）不属于产品命名，不改。项目未发布，旧名不做兼容别名，不迁移旧数据目录 |
 | D13 | 环境引导脚本 | 装 Rust 工具链不能由本应用二进制承担（编译前二进制不存在），由 `scripts/bootstrap-windows.ps1`（winget 装 rustup + VS Build Tools）与 `scripts/bootstrap.sh` 幂等完成；预编译二进制直发为 P2 备选 |
 | D14 | 问答必填 / 选填分层 | 向导问答两段式：必填仅 3 项（endpoint / model / API Key），其余全部归入"高级选项"（默认否，逐项带默认值与说明，回车即过）；理由：目标用户含不懂技术细节的玩家，减少首跑门槛 |
+| D18 | 工作区交互确认（v0.10 实测反馈：服务器文件静默落入数据目录深处，用户不知装到哪了） | 开服流程（`new` / `plan`）在方案确认环节**交互询问安装目录**，默认值 = **运行 mcha 的当前目录**（已设 `MCHA_WORKSPACE` / config 时显示为默认值并注明来源）；本次输入优先级最高，但不写回 config（逐次确认，显式持久化走 `config wizard`）；`--yes`（演示/CI）跳过询问、采用默认并留痕；Java 仍装受管目录（数据目录 runtime/），只有服务端文件跟随工作区 |
+| D19 | 部署执行可观测性（v0.10 实测反馈：下载完成后终端静默直至超时失败，trace 只有 LLM 步，失败原因与启动日志无处可查） | ① 执行流水线每步发布 Exec 轨迹（补齐 R5）；② 服务端 stderr 与 stdout 并读（防管道写满卡死 + 崩溃原因可见）；③ 启动日志落盘 `<server_dir>/mcha-launch.log`，失败附日志尾部；④ 就绪等待周期上报"已等待 N/上限 秒"，上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；⑤ 失败摘要写入 `events.jsonl` 与 `TaskTrace.error`；⑥ 模型文本直显扩大到伴随工具调用的轮次；⑦ 步骤完成以滚动摘要行留痕（进度条收起） |
 
 ## 16. 里程碑与风险
 
@@ -617,3 +629,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |
 | 2026-08-31 | v0.9.5 | 实测缺陷修复（澄清循环）：① CLI 层每轮传空回答表且 `merge_answers` 缺 whitelist 分支，用户白名单输入被静默丢弃 → 决策树反复追问直至 3 轮超限退出（`mcha plan` 为无限循环）；修复为循环外累积 Answers 并逐轮传入 `derive_spec`，`cmd_plan` 补 3 轮上限。② 白名单从"强制必选"改为"建议可选"（Question 新增 `allow_empty`），明确跳过 → `white-list=false`；`exec.rs` 两个白名单开关按名单是否非空写入，消除"空白名单 + white-list=true 锁死服务器"隐患；ID 分隔符移除空格 |
 | 2026-08-31 | v0.9.6 | 规范版本 id 原则（§8.4，实测缺陷修复）：决策树曾把 semver 归一化结果回写 `ServerSpec.mc_version`（`26.2` → `26.2.0`），导致部署 preflight 字符串精确比对清单失败（"版本不存在，相近版本 26.2"）——自造差异、自己拒绝自己。修复三处：① `knowledge::canonicalize_version` 统一"语义比较、原文回写"；② 决策树命中清单时写清单原文 id（含 `26.2.0` 这类输入的自动校正），`CompatReport` 增 `canonical_version` 让模型直接抄官方 id；③ preflight 精确匹配失败先语义比对并自愈存量 spec（含旧档案），校正留痕，仍无匹配才报错给建议 |
+| 2026-08-31 | v0.10 | 执行可观测性与工作区确认（session-backup 实测复盘：下载完成后终端静默 4 分钟至就绪超时失败，trace 只有 LLM 步，stderr 接而不读）。决议 **D18**：开服前交互询问安装目录，默认当前目录（原为数据目录深处）；决议 **D19**：Exec 轨迹补全、stderr 并读防死锁、启动日志落盘 `mcha-launch.log` 并在失败时附尾部、就绪等待计时与 `[deploy] ready_timeout_secs` 配置、失败摘要入 events.jsonl / TaskTrace.error、模型文本直显扩大到工具调用轮次、步骤完成滚动留痕。§5.1/§8.1/§8.5/§8.7/§9 同步更新 |

@@ -394,13 +394,15 @@ impl<'a> RequirementAgent<'a> {
                 },
             });
 
-            // 进度与直显（R4/D17）：本轮在做什么、模型说了什么
+            // 进度与直显（R4/D17/D19）：本轮在做什么、模型说了什么。
+            // 所有轮次的非空文本都直显——模型惯用"我来核实一下版本…"这类
+            // 过程叙述伴随工具调用，只在此类轮次可见，用户才能理解 Agent 在干什么
             let tool_names: Vec<&str> = resp
                 .tool_calls
                 .iter()
                 .map(|c| c.function.name.as_str())
                 .collect();
-            if tool_names.is_empty() && !resp.content.trim().is_empty() {
+            if !resp.content.trim().is_empty() {
                 self.bus.publish(crate::events::ProgressEvent::Notice {
                     task_id: self.task_id.clone(),
                     text: format!("开服管家：{}", resp.content.trim()),

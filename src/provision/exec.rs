@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
-use crate::events::{EventBus, ProgressEvent, TaskId};
+use crate::events::{EventBus, ProgressEvent, TaskId, TraceEvent, TraceKind, TraceStep};
 use crate::knowledge::KnowledgeBase;
 use crate::knowledge::upstream::{
     DownloadItem, DownloadKind, FabricClient, HttpBase, ModrinthClient, MojangClient, PaperClient,
@@ -89,18 +89,73 @@ pub struct ConnectionInfo {
 
 /// 主入口：把一份已确认的 ServerSpec 部署为运行中的服务器。
 /// 全程确定性执行，LLM 不参与（设计原则 3）。
+/// 外层捕获失败：中断的步骤以失败摘要收尾（进度 + Exec 轨迹，决议 D19）。
 pub async fn deploy(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
     task_id: &TaskId,
 ) -> Result<DeployResult, DeployError> {
+    let mut track = StepTrack::default();
+    let result = deploy_inner(spec, ctx, task_id, &mut track).await;
+    if let Err(e) = &result {
+        track.finish_failed(ctx, task_id, &e.to_string());
+    }
+    result
+}
+
+/// 当前执行步骤追踪（决议 D19）：失败时补发该步骤的失败进度与轨迹，
+/// 避免 `?` 早退路径留下"永远旋转的进度条 + trace 缺一步"。
+#[derive(Default)]
+struct StepTrack {
+    /// (step id, 标题)；step_done 消费，finish_failed 兜底消费
+    current: Option<(&'static str, String)>,
+}
+
+impl StepTrack {
+    fn finish_failed(&mut self, ctx: &DeployContext, task_id: &TaskId, error: &str) {
+        if let Some((step, title)) = self.current.take() {
+            ctx.bus.publish(ProgressEvent::StepFinished {
+                task_id: task_id.clone(),
+                step: step.into(),
+                ok: false,
+                detail: Some(error.to_string()),
+            });
+            exec_trace(ctx, task_id, &format!("{title}：✘ {error}"), step);
+        }
+    }
+}
+
+/// 发布一条 Exec 轨迹步骤（决议 D19：执行流水线全程留痕，R5）。
+fn exec_trace(ctx: &DeployContext, task_id: &TaskId, summary: &str, step: &str) {
+    ctx.bus.publish(TraceEvent::StepAdded {
+        task_id: task_id.clone(),
+        step: TraceStep {
+            kind: TraceKind::Exec,
+            summary: summary.into(),
+            usage_refs: vec![],
+            at: chrono::Local::now(),
+            detail: Some(serde_json::json!({ "step": step })),
+        },
+    });
+}
+
+async fn deploy_inner(
+    spec: &mut ServerSpec,
+    ctx: &DeployContext,
+    task_id: &TaskId,
+    track: &mut StepTrack,
+) -> Result<DeployResult, DeployError> {
     if ctx.cancel.is_cancelled() {
         return Err(DeployError::Cancelled);
     }
 
-    step_begin(ctx, task_id, "preflight", "环境复检");
-    preflight(spec, ctx, task_id).await?;
-    step_done(ctx, task_id, "preflight", true, None);
+    // 服务端目录提前解析（FR-19/D18）：工作区不可写应在下载前失败，
+    // 且安装位置必须显式可见（用户不再需要猜文件装到哪了）
+    let server_dir = ctx.server_dir(spec)?;
+
+    step_begin(ctx, task_id, "preflight", "环境复检", track);
+    preflight(spec, ctx, task_id, &server_dir).await?;
+    step_done(ctx, task_id, true, None, track);
 
     // Java 供给（§8.8）：required_major 以官方动态值为准（v0.9 与 check_version_compat
     // 同口径，"能查就不猜"），上游不可达时回落知识库静态表；决策树此前的静态外推
@@ -129,7 +184,7 @@ pub async fn deploy(
         );
         spec.java.required_major = official_major;
     }
-    step_begin(ctx, task_id, "java", "Java 供给");
+    step_begin(ctx, task_id, "java", "Java 供给", track);
     let java_runtime = resolve_java(
         spec.java.required_major,
         &ctx.cfg,
@@ -140,27 +195,29 @@ pub async fn deploy(
         ctx.cancel.clone(),
     )
     .await?;
+    let java_detail = match &java_runtime {
+        crate::spec::JavaRuntime::System { version, .. } => {
+            format!("使用系统 Java {version}")
+        }
+        crate::spec::JavaRuntime::Managed { version, .. } => {
+            format!("受管 JRE 就绪：{version}")
+        }
+        crate::spec::JavaRuntime::Pending => "Java 运行时未就绪".into(),
+    };
     spec.java.runtime = java_runtime;
-    step_done(ctx, task_id, "java", true, None);
+    step_done(ctx, task_id, true, Some(java_detail), track);
 
     // 服务端主 jar 下载（官方渠道 + 哈希校验）
-    step_begin(ctx, task_id, "download", "获取服务端");
+    step_begin(ctx, task_id, "download", "获取服务端", track);
     let jar_item = server_jar_item(spec, ctx).await?;
-    let server_dir = ctx.server_dir(spec)?;
     let jar_path = download(ctx, task_id, "download", &jar_item, &server_dir).await?;
-    step_done(
-        ctx,
-        task_id,
-        "download",
-        true,
-        Some(jar_item.file_name.clone()),
-    );
+    step_done(ctx, task_id, true, Some(jar_item.file_name.clone()), track);
 
     // mod 解析与下载（Fabric；依赖闭包在 knowledge 层展开）
     if let ServerSoftware::Fabric { .. } = &spec.software
         && !spec.mod_names.is_empty()
     {
-        step_begin(ctx, task_id, "mods", "解析并安装 mod");
+        step_begin(ctx, task_id, "mods", "解析并安装 mod", track);
         let flat = resolve_all_mods(spec, ctx).await?;
         let mods_dir = server_dir.join("mods");
         let total = flat.len();
@@ -184,19 +241,19 @@ pub async fn deploy(
         step_done(
             ctx,
             task_id,
-            "mods",
             true,
             Some(format!("共 {total} 个文件")),
+            track,
         );
     }
 
     // 配置生成（eula / server.properties / 启动参数）
-    step_begin(ctx, task_id, "config", "生成配置");
+    step_begin(ctx, task_id, "config", "生成配置", track);
     write_configs(spec, &server_dir)?;
-    step_done(ctx, task_id, "config", true, None);
+    step_done(ctx, task_id, true, None, track);
 
-    // 启动 + 就绪检测
-    step_begin(ctx, task_id, "launch", "启动服务端");
+    // 启动 + 就绪检测（决议 D19：超时可配置、日志落盘并直显、等待可感知）
+    step_begin(ctx, task_id, "launch", "启动服务端", track);
     let java_path = managed_java_path(&spec.java.runtime)
         .ok_or(DeployError::Preflight("Java 运行时未就绪".into()))?;
     let jvm_args = vec![
@@ -204,22 +261,59 @@ pub async fn deploy(
         format!("-Xmx{}M", spec.jvm_memory_mb),
     ];
     let process = ServerProcess::spawn(&java_path, &jvm_args, &jar_path, &server_dir).await?;
+    let ready_timeout = ctx.cfg.deploy.ready_timeout_secs;
+    let log_path = server_dir.join("mcha-launch.log");
+    ctx.bus.publish(ProgressEvent::StepProgress {
+        task_id: task_id.clone(),
+        step: "launch".into(),
+        current: 0,
+        total: None,
+        detail: Some(format!(
+            "正在启动（就绪检测上限 {ready_timeout} 秒，日志实时滚动；完整日志 {}）",
+            log_path.display()
+        )),
+    });
+    let started_at = std::time::Instant::now();
     let readiness = process
-        .wait_ready(240, ctx.cancel.clone(), |line| {
-            ctx.bus.publish(ProgressEvent::StepProgress {
-                task_id: task_id.clone(),
-                step: "launch".into(),
-                current: 0,
-                total: None,
-                detail: Some(line.to_string()),
-            });
-        })
+        .wait_ready(
+            ready_timeout,
+            ctx.cancel.clone(),
+            &log_path,
+            {
+                let task_id = task_id.clone();
+                move |line| {
+                    ctx.bus.publish(ProgressEvent::LogLine {
+                        task_id: task_id.clone(),
+                        step: "launch".into(),
+                        line: line.to_string(),
+                    });
+                }
+            },
+            {
+                let task_id = task_id.clone();
+                move |elapsed| {
+                    ctx.bus.publish(ProgressEvent::StepProgress {
+                        task_id: task_id.clone(),
+                        step: "launch".into(),
+                        current: elapsed,
+                        total: Some(ready_timeout),
+                        detail: Some(format!("已等待 {elapsed}/{ready_timeout} 秒")),
+                    });
+                }
+            },
+        )
         .await;
     let (ready_ok, ready_detail) = match &readiness {
-        Ok(()) => (true, None),
+        Ok(()) => (
+            true,
+            Some(format!(
+                "服务器就绪，用时 {:.0} 秒",
+                started_at.elapsed().as_secs_f32()
+            )),
+        ),
         Err(e) => (false, Some(e.to_string())),
     };
-    step_done(ctx, task_id, "launch", ready_ok, ready_detail);
+    step_done(ctx, task_id, ready_ok, ready_detail, track);
     readiness?;
 
     spec.server_dir = Some(server_dir.to_string_lossy().to_string());
@@ -233,6 +327,7 @@ async fn preflight(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
     task_id: &TaskId,
+    server_dir: &Path,
 ) -> Result<(), DeployError> {
     // 版本存在性复检（决策树可能未带官方清单缓存）。
     // 规范 id 原则（§8.4 v0.9.6）：精确匹配失败先做语义比对并自愈——
@@ -265,7 +360,11 @@ async fn preflight(
         step: "preflight".into(),
         current: 1,
         total: Some(2),
-        detail: Some(format!("版本 {} 校验通过", spec.mc_version)),
+        detail: Some(format!(
+            "版本 {} 校验通过，安装目录：{}",
+            spec.mc_version,
+            server_dir.display()
+        )),
     });
 
     // 端口占用检查：绑定成功后立即释放
@@ -447,7 +546,14 @@ fn connection_info(spec: &ServerSpec) -> ConnectionInfo {
     ConnectionInfo { lines }
 }
 
-fn step_begin(ctx: &DeployContext, task_id: &TaskId, step: &str, title: &str) {
+fn step_begin(
+    ctx: &DeployContext,
+    task_id: &TaskId,
+    step: &'static str,
+    title: &str,
+    track: &mut StepTrack,
+) {
+    track.current = Some((step, title.to_string()));
     ctx.bus.publish(ProgressEvent::StepStarted {
         task_id: task_id.clone(),
         step: step.into(),
@@ -455,13 +561,29 @@ fn step_begin(ctx: &DeployContext, task_id: &TaskId, step: &str, title: &str) {
     });
 }
 
-fn step_done(ctx: &DeployContext, task_id: &TaskId, step: &str, ok: bool, detail: Option<String>) {
+/// 步骤收尾：进度事件 + Exec 轨迹一并发布（决议 D19）。
+fn step_done(
+    ctx: &DeployContext,
+    task_id: &TaskId,
+    ok: bool,
+    detail: Option<String>,
+    track: &mut StepTrack,
+) {
+    let Some((step, title)) = track.current.take() else {
+        return;
+    };
     ctx.bus.publish(ProgressEvent::StepFinished {
         task_id: task_id.clone(),
         step: step.into(),
         ok,
-        detail,
+        detail: detail.clone(),
     });
+    let mark = if ok { "✔" } else { "✘" };
+    let summary = match detail {
+        Some(d) if !d.is_empty() => format!("{title}：{mark} {d}"),
+        _ => format!("{title}：{mark}"),
+    };
+    exec_trace(ctx, task_id, &summary, step);
 }
 
 #[cfg(test)]
