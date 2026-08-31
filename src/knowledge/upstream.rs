@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
@@ -38,6 +37,8 @@ pub enum UpstreamError {
     },
     #[error("上游响应缺少预期字段：{0}")]
     BadResponse(String),
+    #[error("下载中断：{0}")]
+    Stalled(String),
     #[error(
         "mod {project} 没有 MC {mc}/{loader} 的可用构建（该 mod 当前最高支持 {latest_supported}）。\
          可询问玩家是否换用其它 mod、降低 MC 版本，或改玩无 mod 服务器"
@@ -78,25 +79,46 @@ pub enum DownloadKind {
 #[derive(Clone)]
 pub struct HttpBase {
     http: reqwest::Client,
+    /// 下载专用客户端（决议 D30）：无总时长超时——大文件（服务端 jar /
+    /// JRE 压缩包）在慢速链路上的耗时不可预估，总时长超时只会掐断健康的
+    /// 传输；中断判定交给分块空闲超时（数据流动即健康）。
+    dl: reqwest::Client,
     mirrors: Vec<(String, String)>,
 }
 
 /// 常规请求默认超时（整体上限；探针类调用用 get_json_timeout 单独收紧）。
 const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// 下载连接建立超时（决议 D30）。
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 下载分块空闲超时（决议 D30）：流式读取中连续这么久收不到新字节才判定
+/// 连接死亡（可重试，带 Range 续传）。只要数据还在流动就永不中断。
+const DOWNLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 impl HttpBase {
     pub fn new(cfg: &AppConfig) -> Result<Self, UpstreamError> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .user_agent("mcha/0.1 (course project)");
-        if !cfg.network.proxy.is_empty() {
-            builder = builder.proxy(
-                reqwest::Proxy::all(&cfg.network.proxy)
-                    .map_err(|e| UpstreamError::BadResponse(format!("代理配置非法：{e}")))?,
-            );
-        }
+        // 代理/UA 各客户端共享；差异只在超时口径
+        let with_proxy =
+            |builder: reqwest::ClientBuilder| -> Result<reqwest::ClientBuilder, UpstreamError> {
+                let b = builder.user_agent("mcha/0.1 (course project)");
+                if cfg.network.proxy.is_empty() {
+                    Ok(b)
+                } else {
+                    Ok(b.proxy(
+                        reqwest::Proxy::all(&cfg.network.proxy).map_err(|e| {
+                            UpstreamError::BadResponse(format!("代理配置非法：{e}"))
+                        })?,
+                    ))
+                }
+            };
+        let http =
+            with_proxy(reqwest::Client::builder().timeout(DEFAULT_REQUEST_TIMEOUT))?.build()?;
+        let dl = with_proxy(reqwest::Client::builder().connect_timeout(DOWNLOAD_CONNECT_TIMEOUT))?
+            .build()?;
         Ok(Self {
-            http: builder.build()?,
+            http,
+            dl,
             mirrors: cfg
                 .network
                 .mirrors
@@ -290,7 +312,19 @@ impl HttpBase {
         on_progress: &dyn Fn(u64, Option<u64>),
     ) -> Result<PathBuf, UpstreamError> {
         let url = self.apply_mirrors(&item.url);
-        let resp = self.http.get(&url).send().await?;
+        std::fs::create_dir_all(dest_dir).map_err(|e| {
+            UpstreamError::BadResponse(format!("创建下载目录 {} 失败：{e}", dest_dir.display()))
+        })?;
+        let tmp_path = dest_dir.join(format!("{}.part", item.file_name));
+
+        // 断点续传（决议 D30）：.part 已有字节则带 Range 续传；服务器不支持
+        // （回 200 全量）就从头重来。重试不再前功尽弃。
+        let resume_from = tmp_path.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut req = self.dl.get(&url);
+        if resume_from > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(UpstreamError::Status {
@@ -299,37 +333,79 @@ impl HttpBase {
                 body: String::new(),
             });
         }
-        let total = resp.content_length();
+        let resumed = resume_from > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+        let total = resp
+            .content_length()
+            .map(|len| len + if resumed { resume_from } else { 0 });
 
-        std::fs::create_dir_all(dest_dir).map_err(|e| {
-            UpstreamError::BadResponse(format!("创建下载目录 {} 失败：{e}", dest_dir.display()))
-        })?;
-        let tmp_path = dest_dir.join(format!("{}.part", item.file_name));
-        let mut file = tokio::io::BufWriter::new(
+        let file = if resumed {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp_path)
+                .await
+                .map_err(|e| UpstreamError::BadResponse(format!("打开续传文件失败：{e}")))?
+        } else {
             tokio::fs::File::create(&tmp_path)
                 .await
-                .map_err(|e| UpstreamError::BadResponse(format!("创建临时文件失败：{e}")))?,
-        );
+                .map_err(|e| UpstreamError::BadResponse(format!("创建临时文件失败：{e}")))?
+        };
+        let mut file = tokio::io::BufWriter::new(file);
 
         let mut sha1 = sha1::Sha1::new();
         let mut sha256 = sha2::Sha256::new();
         // RustCrypto 各 crate 共享 digest::Digest trait，导入一次即可
         use sha1::Digest as _;
         let mut current: u64 = 0;
-        let mut stream = resp.bytes_stream();
-        let mut reported: u64 = 0;
+        if resumed {
+            // 已有字节补入哈希：流式读 .part（不整载内存）
+            let mut existing = tokio::io::BufReader::new(
+                tokio::fs::File::open(&tmp_path)
+                    .await
+                    .map_err(|e| UpstreamError::BadResponse(format!("读取续传文件失败：{e}")))?,
+            );
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut existing, &mut buf)
+                    .await
+                    .map_err(|e| UpstreamError::BadResponse(format!("读取续传文件失败：{e}")))?;
+                if n == 0 {
+                    break;
+                }
+                sha1.update(&buf[..n]);
+                sha256.update(&buf[..n]);
+                current += n as u64;
+            }
+        }
+        let mut reported: u64 = current;
+        if resumed {
+            on_progress(current, total); // 让进度立刻反映续传起点
+        }
 
+        let mut stream = resp.bytes_stream();
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(UpstreamError::Cancelled),
-                chunk = futures::StreamExt::next(&mut stream) => {
-                    let Some(chunk) = chunk else { break };
+                read = tokio::time::timeout(
+                    DOWNLOAD_IDLE_TIMEOUT,
+                    futures::StreamExt::next(&mut stream),
+                ) => {
+                    // Ok(None) = 流正常结束；Err(_) = 空闲超时；Ok(Some) = 新数据
+                    let chunk = match read {
+                        Ok(Some(chunk)) => chunk,
+                        Ok(None) => break,
+                        Err(_) => {
+                            return Err(UpstreamError::Stalled(format!(
+                                "连续 {} 秒未收到新数据（.part 已保留，重试将断点续传）",
+                                DOWNLOAD_IDLE_TIMEOUT.as_secs()
+                            )))
+                        }
+                    };
                     let bytes = chunk?;
                     sha1.update(&bytes);
                     sha256.update(&bytes);
                     current += bytes.len() as u64;
-                    file.write_all(&bytes).await.map_err(|e| {
+                    tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| {
                         UpstreamError::BadResponse(format!("写入临时文件失败：{e}"))
                     })?;
                     // 每 512KB 上报一次进度，避免事件风暴
@@ -340,17 +416,19 @@ impl HttpBase {
                 }
             }
         }
-        file.flush()
+        tokio::io::AsyncWriteExt::flush(&mut file)
             .await
             .map_err(|e| UpstreamError::BadResponse(format!("写入临时文件失败：{e}")))?;
         drop(file);
         on_progress(current, total);
 
-        // 哈希校验（下载安全第三重，§12）
+        // 哈希校验（下载安全第三重，§12）。不匹配 = 整个文件已坏，必须删掉
+        // .part，否则下次断点续传会把坏文件当基础继续续（决议 D30 边界）。
         let digest_hex = |bytes: &[u8]| hex::encode(bytes);
         if let Some(expected) = &item.sha1 {
             let actual = digest_hex(&sha1.finalize());
             if !actual.eq_ignore_ascii_case(expected) {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
                 return Err(UpstreamError::HashMismatch {
                     file: item.file_name.clone(),
                     expected: expected.clone(),
@@ -361,6 +439,7 @@ impl HttpBase {
         if let Some(expected) = &item.sha256 {
             let actual = digest_hex(&sha256.finalize());
             if !actual.eq_ignore_ascii_case(expected) {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
                 return Err(UpstreamError::HashMismatch {
                     file: item.file_name.clone(),
                     expected: expected.clone(),
@@ -1024,6 +1103,8 @@ fn is_transient_upstream(e: &UpstreamError) -> bool {
     match e {
         UpstreamError::Http(req) => is_transient_reqwest(req),
         UpstreamError::Status { status, .. } => *status >= 500 || *status == 429,
+        // 空闲超时 = 连接死亡，可重试且 .part 已保留（续传）
+        UpstreamError::Stalled(_) => true,
         UpstreamError::Cancelled => false,
         _ => false,
     }
@@ -1040,6 +1121,21 @@ mod tests {
 
     fn base() -> HttpBase {
         HttpBase::new(&crate::config::AppConfig::default()).unwrap()
+    }
+
+    /// 决议 D30：空闲超时（Stalled）必须判定为可重试——重试时 .part 已
+    /// 保留，带 Range 续传，不再前功尽弃。
+    #[test]
+    fn stalled错误判定为可重试() {
+        let e = UpstreamError::Stalled("连续 45 秒未收到新数据".into());
+        assert!(is_transient_upstream(&e));
+        // 哈希不匹配依旧不可重试（文件坏了，续传无意义）
+        let bad = UpstreamError::HashMismatch {
+            file: "x.jar".into(),
+            expected: "a".into(),
+            actual: "b".into(),
+        };
+        assert!(!is_transient_upstream(&bad));
     }
 
     #[tokio::test]

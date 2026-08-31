@@ -313,20 +313,25 @@ pub(crate) async fn download(
     dest_dir: &Path,
 ) -> Result<PathBuf, DeployError> {
     let bus_step = step.to_string();
+    // v0.12.4（决议 D30）：进度行显示 MB 与平均速度——慢速大文件下载时
+    // 用户全程看得到"在动"，不会再误判为程序卡死。平均速度无共享状态，
+    // 简单可解释（瞬时速度抖动大，反而误导）。
+    let started = std::time::Instant::now();
+    let mb = |b: u64| format!("{:.1} MB", b as f64 / 1_048_576.0);
     let path = ctx
         .http
         .download(item, dest_dir, ctx.cancel.clone(), &|current, total| {
+            let speed = current as f64 / 1_048_576.0 / started.elapsed().as_secs_f64().max(0.5);
+            let body = match total {
+                Some(t) => format!("{}/{}（平均 {speed:.2} MB/s）", mb(current), mb(t)),
+                None => format!("{}（平均 {speed:.2} MB/s）", mb(current)),
+            };
             ctx.bus.publish(ProgressEvent::StepProgress {
                 task_id: task_id.clone(),
                 step: bus_step.clone(),
                 current,
                 total,
-                detail: Some(format!(
-                    "下载 {} {}/{} 字节",
-                    item.file_name,
-                    current,
-                    total.map(|t| t.to_string()).unwrap_or_else(|| "?".into())
-                )),
+                detail: Some(format!("下载 {}：{body}", item.file_name)),
             });
         })
         .await?;
@@ -648,16 +653,12 @@ mod tests {
     /// 内存与 jar 参数与托管启动一致，CRLF 行尾。
     #[test]
     fn 启动脚本_bat形态() {
-        let s = start_script_content(
-            true,
-            r"C:\Program Files\Java\jdk-25.0.1+12-jre\bin\java.exe",
-            "spigot-26.2.jar",
-            2048,
-            "e2e-spigot",
-        );
+        let java =
+            r"C:\Users\Some One\AppData\Roaming\mcha\runtime\jdk-25\jdk-25.0.1+12-jre\bin\java.exe";
+        let s = start_script_content(true, java, "spigot-26.2.jar", 2048, "e2e-spigot");
         assert!(s.contains("cd /d %~dp0"));
         assert!(
-            s.contains(r#""C:\Program Files\Java\jdk-25.0.1+12-jre\bin\java.exe""#),
+            s.contains(&format!("\"{java}\"")),
             "含空格路径必须加引号：{s}"
         );
         assert!(s.contains("-Xms1024M -Xmx2048M -jar spigot-26.2.jar nogui"));
@@ -864,7 +865,7 @@ mod integration {
     }
 
     /// Spigot 一次跑通验收（v0.11，用户场景：spigot + 26.2，本机 127.0.0.1
-    /// 进服）：预检 → Java 25 供给（Program Files\Java 或受管目录）→
+    /// 进服）：预检 → Java 25 供给（数据目录受管安装，v0.12.4 起零 UAC）→
     /// getbukkit 镜像下载 → 配置 + start.bat → 启动 → 就绪后本机 TCP 连通
     /// 127.0.0.1:25565 → 干净停止。需联网，在实机运行：
     /// `cargo test -- --ignored 端到端_spigot`

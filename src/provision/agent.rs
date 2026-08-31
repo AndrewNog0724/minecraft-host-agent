@@ -138,7 +138,7 @@ impl<'a> ProvisionAgent<'a> {
             ),
             ToolDecl::new(
                 "ensure_java",
-                "确保方案所需大版本的 Java 就绪（系统复用/受管安装自动完成，Windows 可能弹一次 UAC）。",
+                "确保方案所需大版本的 Java 就绪（系统复用/受管安装自动完成，装在数据目录 runtime/ 下，全程无 UAC 弹窗）。",
                 json!({"type": "object", "properties": {}}),
             ),
             ToolDecl::new(
@@ -318,7 +318,9 @@ impl<'a> ProvisionAgent<'a> {
                 step_done(self.ctx, self.task_id, true, Some(detail), &mut self.track);
                 Ok(json!({"status": "ready", "java_path": java_path}))
             }
-            Err(super::java::JavaError::Cancelled) => {
+            Err(super::java::JavaError::Upstream(
+                crate::knowledge::upstream::UpstreamError::Cancelled,
+            )) => {
                 step_done(
                     self.ctx,
                     self.task_id,
@@ -1113,7 +1115,7 @@ impl<'a> ProvisionAgent<'a> {
     }
 }
 
-/// 与玩家的同步问答（UAC 预告、渠道确认、放行确认共用）。
+/// 与玩家的同步问答（渠道确认、白名单外域名放行等共用；v0.12.4 起无 UAC 场景）。
 /// 有 options → 单选；无 options → 自由输入（允许空）。
 fn ask_user_blocking(question: &str, options: &[String]) -> Result<String, String> {
     if options.is_empty() {
