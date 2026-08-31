@@ -406,6 +406,27 @@ pub(crate) async fn resolve_all_mods(
     Ok(crate::knowledge::flatten_mods(&resolved))
 }
 
+/// 生成 Mojang 离线 UUID（whitelist.json 用，v0.12.2 勘误新增）。
+/// 口径与官方离线模式一致：UUID v3，命名空间输入为 `OfflinePlayer:<name>`
+/// 的 MD5，再按 RFC 4122 摆位（第 7 字节高半字节 = 3，第 9 字节高两位 = 10）。
+/// 正版服的白名单 uuid 需向 Mojang API 查询，但白名单问题只在离线/混合
+/// 场景出现（决策树仅在此两类追问），离线口径即正确口径。
+fn offline_uuid(name: &str) -> String {
+    use md5::{Digest, Md5};
+    let mut h = Md5::digest(format!("OfflinePlayer:{name}").as_bytes());
+    h[6] = (h[6] & 0x0f) | 0x30;
+    h[8] = (h[8] & 0x3f) | 0x80;
+    let hex: Vec<String> = h.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex[0..4].concat(),
+        hex[4..6].concat(),
+        hex[6..8].concat(),
+        hex[8..10].concat(),
+        hex[10..16].concat()
+    )
+}
+
 /// 写 eula.txt / server.properties / 启动脚本 / whitelist.json
 /// （FR-04 + 决议 D23；决策树节点落配置）。
 pub(crate) fn write_configs(
@@ -477,10 +498,14 @@ pub(crate) fn write_configs(
     }
 
     if !whitelist.is_empty() {
-        // whitelist.json 每行一个对象（Minecraft 接受 JSON 数组）
+        // whitelist.json 每行一个对象（Minecraft 接受 JSON 数组）。
+        // v0.12.2 勘误：条目**必须含 uuid 字段**——只写 name 的条目在服务器
+        // 加载白名单时被静默丢弃，表现为 white-list=true + 名单实际为空，
+        // 所有玩家（含服主）被拒之门外。白名单仅在离线/混合场景出现，
+        // uuid 采用 Mojang 离线口径（v3，MD5("OfflinePlayer:<name>")）。
         let entries: Vec<String> = whitelist
             .iter()
-            .map(|n| format!(r#"{{"name": "{n}"}}"#))
+            .map(|n| format!(r#"{{"uuid": "{}", "name": "{n}"}}"#, offline_uuid(n)))
             .collect();
         std::fs::write(
             server_dir.join("whitelist.json"),
@@ -687,6 +712,54 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    /// v0.12.2 勘误回归：whitelist.json 条目必须带离线 uuid——
+    /// 只写 name 的条目会被服务器加载白名单时静默丢弃，
+    /// 表现为 white-list=true + 名单实际为空、所有玩家被拒（实测缺陷）。
+    #[test]
+    fn 白名单条目必须带离线uuid() {
+        let mut spec = ServerSpec::new("wl-test");
+        spec.mc_version = "26.2".into();
+        spec.software = ServerSoftware::Vanilla;
+        spec.account = AccountPolicy::Offline {
+            whitelist: vec!["AndrewNog".into(), "KL_cgt_".into()],
+        };
+        spec.network = NetworkPlan::LanOnly;
+        let dir = std::env::temp_dir().join(format!("mcha-wl-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        write_configs(&spec, &dir, Path::new("spigot-26.2.jar")).unwrap();
+
+        let content = std::fs::read_to_string(dir.join("whitelist.json")).unwrap();
+        assert!(content.contains(r#""name": "AndrewNog""#));
+        let n_names = content.matches("\"name\"").count();
+        let n_uuids = content.matches("\"uuid\"").count();
+        assert_eq!(
+            n_names, n_uuids,
+            "每条目必须同时含 uuid 与 name（缺 uuid 会被服务器静默丢弃）：{content}"
+        );
+
+        // 离线 UUID 结构：8-4-4-4-12，version 3，RFC 4122 variant
+        for id in ["AndrewNog", "KL_cgt_"] {
+            let u = offline_uuid(id);
+            let parts: Vec<&str> = u.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+                vec![8, 4, 4, 4, 12],
+                "{u}"
+            );
+            assert_eq!(parts[2].chars().next().unwrap(), '3', "v3 版本位：{u}");
+            assert!(
+                matches!(parts[3].chars().next().unwrap(), '8' | '9' | 'a' | 'b'),
+                "variant 位：{u}"
+            );
+        }
+        assert_eq!(
+            offline_uuid("AndrewNog"),
+            offline_uuid("AndrewNog"),
+            "确定性"
+        );
+        assert_ne!(offline_uuid("AndrewNog"), offline_uuid("KL_cgt_"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

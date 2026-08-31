@@ -38,6 +38,8 @@ semver = "1"
 # 哈希校验：Mojang 用 sha1，Modrinth 给 sha1/sha512，Adoptium 给 sha256
 sha1 = "0.10"
 sha2 = "0.10"
+# 离线 UUID 生成（whitelist.json 条目必需 uuid 字段）：Mojang 离线 UUID = v3/MD5
+md-5 = "0.10"
 hex = "0.4"
 # 压缩解压：Java 供给（§8.8）。Windows zip 免安装包；Linux/macOS tar.gz，均纯 Rust
 zip = { version = "4", default-features = false, features = ["deflate"] }
