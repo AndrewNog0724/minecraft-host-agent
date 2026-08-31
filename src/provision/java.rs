@@ -9,6 +9,8 @@
 //! 只写该子目录，不改注册表、不改系统 PATH。其余平台只写数据目录受管位置。
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -33,7 +35,12 @@ pub enum JavaError {
     Install(String),
     #[error("JRE 解压后找不到 java 可执行文件")]
     JavaBinaryNotFound,
+    #[error("操作已被用户取消")]
+    Cancelled,
 }
+
+/// UAC 提权等待上限（决议 D27）：弹窗未被确认时绝不永久挂起。
+const ELEVATION_TIMEOUT_SECS: u64 = 120;
 
 /// 平台 java 可执行相对路径。
 fn java_bin_relative() -> &'static str {
@@ -259,9 +266,19 @@ pub async fn resolve_java(
             let declined_marker = data_dir.join("runtime").join("migrate-declined.flag");
             let declined_before = declined_marker.is_file();
             let migrated = if declined_before {
-                None
+                Ok(None)
             } else {
-                migrate_managed_to_program_files(&path, required_major).await
+                migrate_managed_to_program_files(&path, required_major, bus, task_id, step, &cancel)
+                    .await
+            };
+            // D27：用户取消必须中止任务，不得降级继续
+            let migrated = match migrated {
+                Ok(m) => m,
+                Err(JavaError::Cancelled) => return Err(JavaError::Cancelled),
+                Err(e) => {
+                    tracing::warn!("迁移流程异常（降级用原位置）：{e}");
+                    None
+                }
             };
             match migrated {
                 Some(new_path) => {
@@ -410,8 +427,20 @@ pub async fn resolve_java(
     let mut java_path: Option<PathBuf> = None;
     if cfg!(windows) {
         let root = program_files_java_root();
-        match install_windows_zip(&zip_path, &root, required_major).await {
+        match install_windows_zip(
+            &zip_path,
+            &root,
+            required_major,
+            bus,
+            task_id,
+            step,
+            &cancel,
+        )
+        .await
+        {
             Ok(path) => java_path = Some(path),
+            // D27：用户取消必须中止任务，不得降级继续装数据目录
+            Err(JavaError::Cancelled) => return Err(JavaError::Cancelled),
             Err(e) => {
                 tracing::warn!("Program Files 安装未完成，回退数据目录受管安装：{e}");
                 bus.publish(ProgressEvent::StepProgress {
@@ -465,13 +494,17 @@ async fn install_windows_zip(
     zip_path: &Path,
     root: &Path,
     required_major: u8,
+    bus: &EventBus,
+    task_id: &str,
+    step: &str,
+    cancel: &CancellationToken,
 ) -> Result<PathBuf, JavaError> {
     if let Err(e) = unzip(zip_path, root) {
         tracing::warn!(
             "直接写入 {} 失败（{e}），弹 UAC 提权安装（用户拒绝则回退数据目录）",
             root.display()
         );
-        elevate_expand_archive(zip_path, root).await?;
+        elevate_expand_archive(zip_path, root, bus, task_id, step, cancel).await?;
     }
     find_java_in_root(root, required_major)
         .await
@@ -501,12 +534,18 @@ fn expand_archive_script(zip_path: &Path, root: &Path) -> String {
     format!("\u{feff}{}\n", lines.join("\n"))
 }
 
-/// 经 UAC 提权运行一段 PowerShell 脚本（决议 D21 公共件）。
+/// 经 UAC 提权运行一段 PowerShell 脚本（决议 D21 公共件；D27 加固）。
 /// 临时 .ps1（UTF-8 BOM，由调用方的脚本生成函数保证）→ 外层 powershell 以
-/// `Start-Process -Verb RunAs` 拉起内层执行并透传退出码。返回内层退出码；
-/// UAC 被拒时内层未启动、外层以退出码 1 收场；进程被信号终止返回 Err。
+/// `Start-Process -Verb RunAs` 拉起内层执行并透传退出码。返回内层退出码。
+/// D27：等待外层进程整体受 120s 超时与取消令牌约束——UAC 弹窗未被确认
+/// 时超时杀进程返回 [`JavaError::Install`]，用户取消时返回
+/// [`JavaError::Cancelled`]，绝不永久挂起（v0.11.1 实测挂死根因）。
 /// `tag` 用于临时脚本命名（jre-install / jre-move）。
-async fn run_elevated_ps(script_content: &str, tag: &str) -> Result<i32, JavaError> {
+async fn run_elevated_ps(
+    script_content: &str,
+    tag: &str,
+    cancel: &CancellationToken,
+) -> Result<i32, JavaError> {
     let script_path = std::env::temp_dir().join(format!("mcha-{tag}.ps1"));
     std::fs::write(&script_path, script_content)
         .map_err(|e| JavaError::Install(format!("写提权脚本失败：{e}")))?;
@@ -515,7 +554,7 @@ async fn run_elevated_ps(script_content: &str, tag: &str) -> Result<i32, JavaErr
          -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{}'; exit $p.ExitCode",
         script_path.display()
     );
-    let out = tokio::process::Command::new("powershell")
+    let mut child = match tokio::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -523,18 +562,87 @@ async fn run_elevated_ps(script_content: &str, tag: &str) -> Result<i32, JavaErr
             "-Command",
             &outer,
         ])
-        .output()
-        .await
-        .map_err(|e| JavaError::Install(format!("无法启动 PowerShell 提权流程：{e}")))?;
-    let _ = std::fs::remove_file(&script_path);
-    out.status
-        .code()
-        .ok_or_else(|| JavaError::Install("提权进程被信号终止".into()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_file(&script_path);
+            return Err(JavaError::Install(format!(
+                "无法启动 PowerShell 提权流程：{e}"
+            )));
+        }
+    };
+
+    /// select 三路竞争的结果；等待 future 在块内 drop，借用在块外结束，
+    /// 之后才能终止子进程（D27）。
+    enum Outcome {
+        Code(i32),
+        TimedOut,
+        Cancelled,
+    }
+    let outcome = {
+        let wait = child.wait();
+        tokio::pin!(wait);
+        tokio::select! {
+            res = &mut wait => Outcome::Code(
+                res.map_err(|e| JavaError::Install(format!("提权进程异常退出：{e}")))?
+                    .code()
+                    .ok_or_else(|| JavaError::Install("提权进程被信号终止".into()))?,
+            ),
+            _ = tokio::time::sleep(Duration::from_secs(ELEVATION_TIMEOUT_SECS)) => Outcome::TimedOut,
+            _ = cancel.cancelled() => Outcome::Cancelled,
+        }
+    };
+    match outcome {
+        Outcome::Code(code) => {
+            let _ = std::fs::remove_file(&script_path);
+            Ok(code)
+        }
+        Outcome::TimedOut => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = std::fs::remove_file(&script_path);
+            Err(JavaError::Install(format!(
+                "提权等待超时（{ELEVATION_TIMEOUT_SECS} 秒）：UAC 弹窗未确认，已中止等待"
+            )))
+        }
+        Outcome::Cancelled => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = std::fs::remove_file(&script_path);
+            Err(JavaError::Cancelled)
+        }
+    }
 }
 
-/// 经 UAC 提权把 JRE zip 解压到安装根（决议 D21）。
-async fn elevate_expand_archive(zip_path: &Path, root: &Path) -> Result<(), JavaError> {
-    let code = run_elevated_ps(&expand_archive_script(zip_path, root), "jre-install").await?;
+/// 经 UAC 提权把 JRE zip 解压到安装根（决议 D21；D27：前置预告 + 超时/取消）。
+async fn elevate_expand_archive(
+    zip_path: &Path,
+    root: &Path,
+    bus: &EventBus,
+    task_id: &str,
+    step: &str,
+    cancel: &CancellationToken,
+) -> Result<(), JavaError> {
+    bus.publish(ProgressEvent::StepProgress {
+        task_id: task_id.into(),
+        step: step.into(),
+        current: 0,
+        total: None,
+        detail: Some(format!(
+            "即将弹出 UAC 窗口请求管理员授权（写入 {}），请在弹窗中点“是”；{} 秒内未确认将自动中止",
+            root.display(),
+            ELEVATION_TIMEOUT_SECS
+        )),
+    });
+    let code = run_elevated_ps(
+        &expand_archive_script(zip_path, root),
+        "jre-install",
+        cancel,
+    )
+    .await?;
     if code == 0 {
         return Ok(());
     }
@@ -570,41 +678,66 @@ fn move_dir_script(src: &Path, dst: &Path) -> String {
 }
 
 /// 决议 D21 v0.11.1：Windows 下把数据目录里的旧受管 JRE 一次性迁移到
-/// 统一安装根 `C:\Program Files\Java\`。返回迁移后的 java 绝对路径；
-/// None = 迁移未完成（UAC 被拒 / 移动失败 / 目标已存在但扫描未命中），
-/// 调用方回退继续用原路径并留痕。
-async fn migrate_managed_to_program_files(java_path: &Path, required_major: u8) -> Option<PathBuf> {
+/// 统一安装根 `C:\Program Files\Java\`。`Ok(Some(path))` = 迁移后的 java
+/// 绝对路径；`Ok(None)` = 迁移未完成（UAC 被拒 / 超时 / 移动失败 / 目标已
+/// 存在但扫描未命中），调用方回退继续用原路径并留痕（D27：降级不阻塞）；
+/// `Err(Cancelled)` = 用户取消，必须向上中止任务。
+async fn migrate_managed_to_program_files(
+    java_path: &Path,
+    required_major: u8,
+    bus: &EventBus,
+    task_id: &str,
+    step: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<PathBuf>, JavaError> {
     let root = program_files_java_root();
     if java_path.starts_with(&root) {
-        return Some(java_path.to_path_buf()); // 已在统一安装根
+        return Ok(Some(java_path.to_path_buf())); // 已在统一安装根
     }
     // 源版本目录 = java 路径上两级（.../<版本>/bin/java → <版本>）
-    let src_dir = java_path.parent()?.parent()?;
-    let dir_name = src_dir.file_name()?.to_string_lossy().to_string();
+    let Some(src_dir) = java_path.parent().and_then(|bin| bin.parent()) else {
+        return Ok(None);
+    };
+    let Some(dir_name) = src_dir.file_name().map(|s| s.to_string_lossy().to_string()) else {
+        return Ok(None);
+    };
     let target = root.join(&dir_name);
 
     // 直接移动（同卷且进程可写 Program Files 时成功；普通权限会失败 → 提权）
     if std::fs::rename(src_dir, &target).is_ok() {
-        return find_java_in_root(&root, required_major).await;
+        return Ok(find_java_in_root(&root, required_major).await);
     }
-    let code = match run_elevated_ps(&move_dir_script(src_dir, &target), "jre-move").await {
+    bus.publish(ProgressEvent::StepProgress {
+        task_id: task_id.into(),
+        step: step.into(),
+        current: 0,
+        total: None,
+        detail: Some(format!(
+            "即将弹出 UAC 窗口请求管理员授权（把旧受管 JRE 迁移到 {}），请在弹窗中点“是”；{} 秒内未确认将自动中止",
+            root.display(),
+            ELEVATION_TIMEOUT_SECS
+        )),
+    });
+    let code = match run_elevated_ps(&move_dir_script(src_dir, &target), "jre-move", cancel).await {
         Ok(code) => code,
+        Err(JavaError::Cancelled) => return Err(JavaError::Cancelled),
+        // D27：超时 / 启动失败等一律降级，不阻塞任务
         Err(e) => {
-            tracing::warn!("提权迁移启动失败：{e}");
-            return None;
+            tracing::warn!("提权迁移中止（降级用原位置）：{e}");
+            return Ok(None);
         }
     };
     match code {
         // 移动成功，或目标已有同名版本（不覆盖、改用现成安装）：
         // 两种情况都以统一安装根的实际扫描结果为准
-        0 | 5 => find_java_in_root(&root, required_major).await,
+        0 | 5 => Ok(find_java_in_root(&root, required_major).await),
         1 => {
             tracing::info!("UAC 被拒绝，JRE 保持原位置");
-            None
+            Ok(None)
         }
         code => {
             tracing::warn!("提权迁移失败（脚本退出码 {code}）");
-            None
+            Ok(None)
         }
     }
 }
@@ -787,7 +920,7 @@ mod tests {
     /// 决议 D21：提权脚本必须是 UTF-8 with BOM（Windows PowerShell 5.1
     /// 对无 BOM 文件按 GBK 误读），且包含路径与退出码约定。
     #[test]
-    fn 提权脚本内容_BOM路径与退出码() {
+    fn 提权脚本内容_bom路径与退出码() {
         let script = expand_archive_script(
             Path::new(r"C:\Users\a\AppData\Local\Temp\mcha-jre\jre.zip"),
             Path::new(r"C:\Program Files\Java"),

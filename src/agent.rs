@@ -17,8 +17,8 @@ use crate::llm::{ChatMessage, LlmError, LlmService, ToolCall, ToolDecl};
 use crate::provision::java;
 use crate::spec::ServerSpecDraft;
 
-/// L3 指南（Skills 式按需注入，§8.9）。
-const GUIDES: &[(&str, &str)] = &[
+/// L3 指南（Skills 式按需注入，§8.9）。部署编排环共用（provision/agent.rs）。
+pub(crate) const GUIDES: &[(&str, &str)] = &[
     (
         "offline-auth",
         include_str!("assets/guides/offline-auth.md"),

@@ -11,20 +11,16 @@ use crate::config::AppConfig;
 use crate::events::{EventBus, ProgressEvent, TaskId, TraceEvent, TraceKind, TraceStep};
 use crate::knowledge::KnowledgeBase;
 use crate::knowledge::upstream::{
-    DownloadItem, DownloadKind, FabricClient, HttpBase, ModrinthClient, MojangClient, PaperClient,
-    SpigotClient,
+    DownloadItem, FabricClient, HttpBase, ModrinthClient, MojangClient, PaperClient, SpigotClient,
 };
 use crate::spec::{AccountPolicy, NetworkPlan, ServerSoftware, ServerSpec};
 
-use super::java::{managed_java_path, resolve_java};
 use super::process::{ProcessError, ServerProcess};
 
 #[derive(Debug, Error)]
 pub enum DeployError {
     #[error("预检失败：{0}")]
     Preflight(String),
-    #[error("服务端获取失败：{0}")]
-    JarDownload(String),
     #[error("{0}")]
     Java(#[from] super::java::JavaError),
     #[error("{0}")]
@@ -37,6 +33,10 @@ pub enum DeployError {
     Io(String),
     #[error("任务已取消")]
     Cancelled,
+    #[error("LLM 调用失败：{0}")]
+    Llm(#[from] crate::llm::LlmError),
+    #[error("部署编排失败：{0}")]
+    Provision(String),
 }
 
 /// 部署上下文：全部依赖显式注入（可测试、可解释）。
@@ -99,9 +99,10 @@ pub async fn deploy(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
     task_id: &TaskId,
+    svc: &crate::llm::LlmService,
 ) -> Result<DeployResult, DeployError> {
     let mut track = StepTrack::default();
-    let result = deploy_inner(spec, ctx, task_id, &mut track).await;
+    let result = deploy_inner(spec, ctx, task_id, svc, &mut track).await;
     if let Err(e) = &result {
         track.finish_failed(ctx, task_id, &e.to_string());
     }
@@ -111,7 +112,7 @@ pub async fn deploy(
 /// 当前执行步骤追踪（决议 D19）：失败时补发该步骤的失败进度与轨迹，
 /// 避免 `?` 早退路径留下"永远旋转的进度条 + trace 缺一步"。
 #[derive(Default)]
-struct StepTrack {
+pub(crate) struct StepTrack {
     /// (step id, 标题)；step_done 消费，finish_failed 兜底消费
     current: Option<(&'static str, String)>,
 }
@@ -131,7 +132,7 @@ impl StepTrack {
 }
 
 /// 发布一条 Exec 轨迹步骤（决议 D19：执行流水线全程留痕，R5）。
-fn exec_trace(ctx: &DeployContext, task_id: &TaskId, summary: &str, step: &str) {
+pub(crate) fn exec_trace(ctx: &DeployContext, task_id: &TaskId, summary: &str, step: &str) {
     ctx.bus.publish(TraceEvent::StepAdded {
         task_id: task_id.clone(),
         step: TraceStep {
@@ -148,6 +149,7 @@ async fn deploy_inner(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
     task_id: &TaskId,
+    svc: &crate::llm::LlmService,
     track: &mut StepTrack,
 ) -> Result<DeployResult, DeployError> {
     if ctx.cancel.is_cancelled() {
@@ -189,210 +191,21 @@ async fn deploy_inner(
         );
         spec.java.required_major = official_major;
     }
-    step_begin(ctx, task_id, "java", "Java 供给", track);
-    let java_runtime = resolve_java(
-        spec.java.required_major,
-        &ctx.cfg,
-        &crate::config::data_dir(),
-        &ctx.http,
-        &ctx.bus,
-        task_id,
-        ctx.cancel.clone(),
-    )
-    .await?;
-    let java_detail = match &java_runtime {
-        crate::spec::JavaRuntime::System { path, version } => {
-            format!("使用系统 Java {version}（{path}）")
-        }
-        crate::spec::JavaRuntime::Managed { path, version, .. } => {
-            // 决议 D19 ⑧：安装位置必须显式可见（实测用户问"Java 装哪了"）
-            format!("受管 JRE {version} 已就绪：{path}")
-        }
-        crate::spec::JavaRuntime::Pending => "Java 运行时未就绪".into(),
-    };
-    spec.java.runtime = java_runtime;
-    step_done(ctx, task_id, true, Some(java_detail), track);
 
-    // 服务端主 jar 下载（官方渠道 / 约定镜像 + 哈希校验）
-    step_begin(ctx, task_id, "download", "获取服务端", track);
-    // v0.11.1 勘误：直链解析阶段此前零反馈且不可取消（实测静默假死、Ctrl-C
-    // 无效）——步骤开始即发进度，解析调用整体接入取消令牌
-    ctx.bus.publish(ProgressEvent::StepProgress {
-        task_id: task_id.clone(),
-        step: "download".into(),
-        current: 0,
-        total: None,
-        detail: Some(format!(
-            "正在解析 {} {} 服务端下载直链（Ctrl-C 可随时中断）",
-            software_label(&spec.software),
-            spec.mc_version
-        )),
-    });
-    let jar_item = tokio::select! {
-        biased;
-        _ = ctx.cancel.cancelled() => return Err(DeployError::Cancelled),
-        item = server_jar_item(spec, ctx) => item?,
-    };
-    ctx.bus.publish(ProgressEvent::StepProgress {
-        task_id: task_id.clone(),
-        step: "download".into(),
-        current: 0,
-        total: None,
-        detail: Some(format!("下载渠道：{}", jar_item.url)),
-    });
-    // 应急通道（决议 D22 v0.11.1）：安装目录已有同名 jar → 校验/明示后复用
-    let mut reuse_note: Option<String> = None;
-    let jar_path = match reuse_existing_jar(&server_dir.join(&jar_item.file_name), &jar_item).await
-    {
-        Ok(Some(note)) => {
-            reuse_note = Some(note.clone());
-            ctx.bus.publish(ProgressEvent::StepProgress {
-                task_id: task_id.clone(),
-                step: "download".into(),
-                current: 0,
-                total: None,
-                detail: Some(note),
-            });
-            server_dir.join(&jar_item.file_name)
-        }
-        Ok(None) => match download(ctx, task_id, "download", &jar_item, &server_dir).await {
-            Ok(p) => p,
-            Err(e) => {
-                let extra = if matches!(spec.software, ServerSoftware::Spigot) {
-                    "；③ 也可参见 README「Spigot 获取失败怎么办」改用 BuildTools 手动编译"
-                } else {
-                    ""
-                };
-                return Err(DeployError::JarDownload(format!(
-                    "{e}\n可执行出路：① 稍后重试（上游镜像偶发抖动）；\
-                         ② 手动下载 {url} 放到 {dir} 后重跑（会自动复用）{extra}",
-                    url = jar_item.url,
-                    dir = server_dir.display(),
-                )));
-            }
-        },
-        Err(e) => return Err(DeployError::Io(format!("检查已有 jar 失败：{e}"))),
-    };
-    // 决议 D19 ⑨：来源 URL 显式可见并入轨迹（实测用户问"服务端哪来的"）
-    step_done(
-        ctx,
-        task_id,
-        true,
-        Some(format!(
-            "{}（来源：{}）{}",
-            jar_item.file_name,
-            jar_item.url,
-            reuse_note.map(|n| format!("；{n}")).unwrap_or_default()
-        )),
-        track,
-    );
-
-    // mod 解析与下载（Fabric；依赖闭包在 knowledge 层展开）
-    if let ServerSoftware::Fabric { .. } = &spec.software
-        && !spec.mod_names.is_empty()
-    {
-        step_begin(ctx, task_id, "mods", "解析并安装 mod", track);
-        let flat = resolve_all_mods(spec, ctx).await?;
-        let mods_dir = server_dir.join("mods");
-        let total = flat.len();
-        for (i, mod_ref) in flat.iter().enumerate() {
-            let item = DownloadItem {
-                url: mod_ref.url.clone(),
-                sha1: Some(mod_ref.sha1.clone()).filter(|s| !s.is_empty()),
-                sha256: None,
-                file_name: mod_ref.file_name.clone(),
-                kind: DownloadKind::Mod,
-            };
-            download(ctx, task_id, "mods", &item, &mods_dir).await?;
-            ctx.bus.publish(ProgressEvent::StepProgress {
-                task_id: task_id.clone(),
-                step: "mods".into(),
-                current: (i + 1) as u64,
-                total: Some(total as u64),
-                detail: Some(format!("已安装 {}/{} 个", i + 1, total)),
-            });
-        }
-        step_done(
-            ctx,
-            task_id,
-            true,
-            Some(format!("共 {total} 个文件")),
-            track,
-        );
-    }
-
-    // 配置生成（eula / server.properties / 启动脚本 / whitelist.json）
-    step_begin(ctx, task_id, "config", "生成配置", track);
-    write_configs(spec, &server_dir, &jar_path)?;
-    step_done(ctx, task_id, true, None, track);
-
-    // 启动 + 就绪检测（决议 D19：超时可配置、日志落盘并直显、等待可感知）
-    step_begin(ctx, task_id, "launch", "启动服务端", track);
-    let java_path = managed_java_path(&spec.java.runtime)
-        .ok_or(DeployError::Preflight("Java 运行时未就绪".into()))?;
-    let jvm_args = vec![
-        format!("-Xms{}M", spec.jvm_memory_mb / 2),
-        format!("-Xmx{}M", spec.jvm_memory_mb),
-    ];
-    let process = ServerProcess::spawn(&java_path, &jvm_args, &jar_path, &server_dir).await?;
-    let ready_timeout = ctx.cfg.deploy.ready_timeout_secs;
-    let log_path = server_dir.join("mcha-launch.log");
-    ctx.bus.publish(ProgressEvent::StepProgress {
-        task_id: task_id.clone(),
-        step: "launch".into(),
-        current: 0,
-        total: None,
-        detail: Some(format!(
-            "正在启动（就绪检测上限 {ready_timeout} 秒，日志实时滚动；完整日志 {}）",
-            log_path.display()
-        )),
-    });
-    let started_at = std::time::Instant::now();
-    let readiness = process
-        .wait_ready(
-            ready_timeout,
-            ctx.cancel.clone(),
-            &log_path,
-            {
-                let task_id = task_id.clone();
-                move |line| {
-                    ctx.bus.publish(ProgressEvent::LogLine {
-                        task_id: task_id.clone(),
-                        step: "launch".into(),
-                        line: line.to_string(),
-                    });
-                }
-            },
-            {
-                let task_id = task_id.clone();
-                move |elapsed| {
-                    ctx.bus.publish(ProgressEvent::StepProgress {
-                        task_id: task_id.clone(),
-                        step: "launch".into(),
-                        current: elapsed,
-                        total: Some(ready_timeout),
-                        detail: Some(format!("已等待 {elapsed}/{ready_timeout} 秒")),
-                    });
-                }
-            },
-        )
-        .await;
-    let (ready_ok, ready_detail) = match &readiness {
-        Ok(()) => (
-            true,
-            Some(format!(
-                "服务器就绪，用时 {:.0} 秒",
-                started_at.elapsed().as_secs_f32()
-            )),
-        ),
-        Err(e) => (false, Some(e.to_string())),
-    };
-    step_done(ctx, task_id, ready_ok, ready_detail, track);
-    readiness?;
+    // ── 部署编排环（决议 D25，v0.12）────────────────────────────
+    // Java 供给 / jar 获取 / mod / 配置 / 启动 / 验证不再硬编码顺序，
+    // 由 LLM 逐工具调用编排；失败结构化回环（重试 / 换渠道 / 问用户），
+    // 不再"一步失败全任务崩"。确定性只保留 preflight、上面的需求校准、
+    // 以及最终的 probe_port 就绪验证（在编排环内完成）。
+    let mut agent = super::agent::ProvisionAgent::new(svc, ctx, spec, task_id, &server_dir);
+    agent.run().await?;
+    let server = agent.take_server().ok_or(DeployError::Preflight(
+        "编排环结束但服务端进程未启动".into(),
+    ))?;
 
     spec.server_dir = Some(server_dir.to_string_lossy().to_string());
     Ok(DeployResult {
-        server: process,
+        server,
         connection: connection_info(spec),
     })
 }
@@ -463,7 +276,7 @@ async fn preflight(
 }
 
 /// 按服务端类型从官方 API / 约定镜像产出主 jar 下载项；Fabric 顺带回填 loader 版本。
-async fn server_jar_item(
+pub(crate) async fn server_jar_item(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
 ) -> Result<DownloadItem, DeployError> {
@@ -492,7 +305,7 @@ async fn server_jar_item(
     }
 }
 
-async fn download(
+pub(crate) async fn download(
     ctx: &DeployContext,
     task_id: &TaskId,
     step: &str,
@@ -521,7 +334,7 @@ async fn download(
 }
 
 /// 软件类型的中文标签（进度与轨迹展示用）。
-fn software_label(sw: &ServerSoftware) -> &'static str {
+pub(crate) fn software_label(sw: &ServerSoftware) -> &'static str {
     match sw {
         ServerSoftware::Vanilla => "原版",
         ServerSoftware::Spigot => "Spigot",
@@ -535,7 +348,10 @@ fn software_label(sw: &ServerSoftware) -> &'static str {
 /// 规则：有哈希 → 实算比对，匹配才复用，不符重下覆盖；
 /// 无哈希（getbukkit 镜像常态）→ 文件非空且 ≥1MB 即复用，轨迹明示
 /// "第三方来源未校验"；过小文件视为占位/残件，直接重下。
-async fn reuse_existing_jar(path: &Path, item: &DownloadItem) -> Result<Option<String>, String> {
+pub(crate) async fn reuse_existing_jar(
+    path: &Path,
+    item: &DownloadItem,
+) -> Result<Option<String>, String> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -570,7 +386,7 @@ async fn reuse_existing_jar(path: &Path, item: &DownloadItem) -> Result<Option<S
 }
 
 /// mod 名称 → Modrinth 依赖闭包（别名表优先，检索兜底，全部确定性）。
-async fn resolve_all_mods(
+pub(crate) async fn resolve_all_mods(
     spec: &ServerSpec,
     ctx: &DeployContext,
 ) -> Result<Vec<crate::spec::ModRef>, DeployError> {
@@ -592,7 +408,11 @@ async fn resolve_all_mods(
 
 /// 写 eula.txt / server.properties / 启动脚本 / whitelist.json
 /// （FR-04 + 决议 D23；决策树节点落配置）。
-fn write_configs(spec: &ServerSpec, server_dir: &Path, jar_path: &Path) -> Result<(), DeployError> {
+pub(crate) fn write_configs(
+    spec: &ServerSpec,
+    server_dir: &Path,
+    jar_path: &Path,
+) -> Result<(), DeployError> {
     std::fs::create_dir_all(server_dir)
         .map_err(|e| DeployError::Io(format!("创建服务端目录：{e}")))?;
 
@@ -719,7 +539,7 @@ fn start_script_content(
 }
 
 /// 连接说明（FR-07）。
-fn connection_info(spec: &ServerSpec) -> ConnectionInfo {
+pub(crate) fn connection_info(spec: &ServerSpec) -> ConnectionInfo {
     let mut lines = vec![
         format!("本机连接：localhost:{}", spec.port),
         "局域网朋友：连接 <你的内网 IP>（ipconfig / ifconfig 查看）".to_string(),
@@ -740,7 +560,7 @@ fn connection_info(spec: &ServerSpec) -> ConnectionInfo {
     ConnectionInfo { lines }
 }
 
-fn step_begin(
+pub(crate) fn step_begin(
     ctx: &DeployContext,
     task_id: &TaskId,
     step: &'static str,
@@ -756,7 +576,7 @@ fn step_begin(
 }
 
 /// 步骤收尾：进度事件 + Exec 轨迹一并发布（决议 D19）。
-fn step_done(
+pub(crate) fn step_done(
     ctx: &DeployContext,
     task_id: &TaskId,
     ok: bool,
@@ -783,6 +603,7 @@ fn step_done(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::upstream::DownloadKind;
 
     /// 决议 D23：start.bat 形态——java 绝对路径含空格必须加引号，
     /// 内存与 jar 参数与托管启动一致，CRLF 行尾。
@@ -885,6 +706,23 @@ mod integration {
         let kb = crate::knowledge::KnowledgeBase::embedded().unwrap();
         let bus = crate::events::EventBus::new();
         let cancel = tokio_util::sync::CancellationToken::new();
+        // 部署已 Agent 化（决议 D25）：e2e 用脚本化 LLM 按标准顺序驱动工具，
+        // 端到端的确定性不依赖真实模型
+        let script = vec![
+            crate::llm::testutil::resp_tool("probe_workspace", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("ensure_java", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("acquire_server_jar", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("write_server_files", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("start_server", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("probe_port", serde_json::json!({"port": 25599})),
+        ];
+        let svc = crate::llm::LlmService::with_client(
+            crate::llm::testutil::ScriptedClient::new(script),
+            "fake",
+            rust_decimal::Decimal::ZERO,
+            std::sync::Arc::new(crate::llm::SpendLedger::new()),
+            bus.clone(),
+        );
         let ctx = DeployContext::new(cfg, kb, bus, cancel).unwrap();
 
         let mut spec = ServerSpec::new("e2e-vanilla");
@@ -898,7 +736,7 @@ mod integration {
         spec.jvm_memory_mb = 2048;
 
         let task_id = "t-e2e".to_string();
-        let result = deploy(&mut spec, &ctx, &task_id)
+        let result = deploy(&mut spec, &ctx, &task_id, &svc)
             .await
             .unwrap_or_else(|e| panic!("部署失败：{e}"));
 
@@ -916,12 +754,27 @@ mod integration {
     #[tokio::test]
     #[ignore = "真实端到端（下载约 50MB 流量，26.2 首次生成世界较慢）：cargo test -- --ignored"]
     async fn 端到端_spigot服务器部署() {
-        // D24：adoptium_mirror 默认即 TUNA 镜像，这里不再手工配置，
-        // 顺带验证"默认镜像开箱即用"
         let cfg = crate::config::AppConfig::default();
         let kb = crate::knowledge::KnowledgeBase::embedded().unwrap();
         let bus = crate::events::EventBus::new();
         let cancel = tokio_util::sync::CancellationToken::new();
+        // 部署已 Agent 化（决议 D25）：脚本化 LLM 按标准顺序驱动工具；
+        // Spigot 渠道链（页面解析→API→复用）在工具内自动完成
+        let script = vec![
+            crate::llm::testutil::resp_tool("probe_workspace", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("ensure_java", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("acquire_server_jar", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("write_server_files", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("start_server", serde_json::json!({})),
+            crate::llm::testutil::resp_tool("probe_port", serde_json::json!({"port": 25565})),
+        ];
+        let svc = crate::llm::LlmService::with_client(
+            crate::llm::testutil::ScriptedClient::new(script),
+            "fake",
+            rust_decimal::Decimal::ZERO,
+            std::sync::Arc::new(crate::llm::SpendLedger::new()),
+            bus.clone(),
+        );
         let ctx = DeployContext::new(cfg, kb, bus, cancel).unwrap();
 
         let mut spec = ServerSpec::new("e2e-spigot");
@@ -935,7 +788,7 @@ mod integration {
         spec.jvm_memory_mb = 2048;
 
         let task_id = "t-e2e-spigot".to_string();
-        let result = deploy(&mut spec, &ctx, &task_id)
+        let result = deploy(&mut spec, &ctx, &task_id, &svc)
             .await
             .unwrap_or_else(|e| panic!("部署失败：{e}"));
 

@@ -279,7 +279,7 @@ struct UsageRecord {
     model: String,
     input_tokens: u64, output_tokens: u64,
     cost: Decimal,               // 按 config 价格表换算
-    phase: Phase,                // Requirement | Diagnosis | Chat
+    phase: Phase,                // Requirement | Provision | Diagnosis | Chat（v0.12：部署编排环入计量，D28）
 }
 
 /// 任务轨迹（R5 的"非黑盒"主体）
@@ -303,6 +303,12 @@ struct TaskTrace {
 - **submit_spec 拒绝信息必须可执行**（D16 增补，v0.9.1 实测）：参数整体是 JSON 字符串（双重编码）且**内层手写坏 JSON**（服务商只校验外层字符串、内层无任何校验，模型会写出缺冒号/缺值/大写 `False` 等）时，schema 层只会报"not of type object"——模型无法自查。拒绝信息必须点名"双重编码 + 内层语法错误位置 + 重交指令（对象本体、只含 partial/questions、小写布尔、不回填工具返回字段）"。配套把同样的硬约束写进 L4 系统提示词（§8.9）：机器环境字段（machine_os 等）仅供分析，禁止回填草案。
 - 系统提示词（L4，需求理解环与诊断环各一套，见 §8.9）声明角色边界："你是需求分析师，不得虚构版本号，未知信息调用工具或提问"；版本类事实不进 Prompt（设计红线，见 §8.9）。
 - 诊断环（P1）工具：`read_log(path, tail_n)`、`get_server_spec()`、`probe_network(port)`、`load_guide(topic)`；产出 `Diagnosis{root_cause, evidence, fix: Vec<Action>, risk}`。
+- **部署编排环（v0.12，决议 D25/D26/D28）**：部署阶段不再由固定流水线接管——同一套窄 Agent Loop 换装执行期系统提示词与工具集，由 LLM 逐工具调用完成部署。这是 R1"LLM 发工具调用、自主解决问题"在执行阶段的落地：输入为已确认的 `ServerSpec` 与工作区目录，产出为"服务端就绪已验证"或结构化失败。
+  - 工具清单（全部 Rust 实现、白名单注册，参数经 JSON Schema 校验，与需求环同纪律）：
+    `probe_workspace()`（只读盘点目录中已有的 jar / 配置 / 日志）、`ensure_java(major)`（§8.8 四级供给逻辑整体作为工具后端）、`acquire_server_jar(software, mc_version)`（内置确定性渠道：getbukkit API → 官方直链 → 安装目录复用；**全部失败时返回结构化错误与提示，把恢复路径交还模型**）、`install_mods(entries)`（Modrinth 清单 + 依赖闭包，复用既有管线）、`http_get_text(url, max_bytes)`（通用只读抓取：15s 超时、大小上限、取消感知——"去 getbukkit 下载页解析直链"就靠它）、`http_download(url, dest, expected_sha256?)`（进度事件 + 哈希校验 + 取消感知；域不在白名单时先经 `ask_user` 确认）、`write_server_files(files)`（eula / server.properties / start 脚本，复用 D23 生成器，路径限制在工作区内）、`start_server(java, jar, jvm_args)`（D19 日志接管 + 就绪检测 + Drop 守卫）、`probe_port(port)`（TCP + MC SLP ping 验证）、`ask_user(question, options)`（确认 / 分叉决策，含 UAC 预告与白名单外下载确认）、`load_guide(topic)`（复用 L3 指南）。
+  - **失败即回到循环，不是终点（D25 核心动机）**：工具返回结构化错误 `{code, message, next_hint}`，模型自行决定重试 / 换渠道 / 页面解析直链 / 问用户——"下载不下来就整个任务崩掉"从结构上不可能再发生（v0.11→v0.11.1 三连修的架构性回应）。
+  - 停止条件：`probe_port` 验证通过（成功）/ 最大轮数（默认 10，D28）/ 用户取消（R4）/ 预算守卫拒绝（R6）/ 连续 3 次工具失败强制转 `ask_user` 或结构化失败（防打转）。
+  - 护栏：每次工具调用发布 `TraceStep(kind: Tool)` 与进度事件（R4/R5）；本地副作用工具路径收敛到工作区与数据目录受管目录（D26，§12）；LLM 没有任何触碰注册表 / 系统 PATH / 防火墙的工具——系统级变更不进模型的手（防火墙确认保持确定性 CLI 流程）。
 
 ### 8.3 llm：OpenAI 兼容客户端
 
@@ -324,7 +330,7 @@ struct TaskTrace {
 ### 8.5 provision：决策树引擎与执行流水线
 
 - 决策树引擎：节点为 `enum DecisionNode`（显式穷举 §5.2 分支），每节点 = 检测函数 + 规则 + 对 `ServerSpec` 的增量写入；信息不足返回 `Missing(NodeId)` 生成澄清问题。**不引入通用规则引擎**——枚举穷举可逐节点解释（NFR-5）。
-- 执行流水线：步骤即事务边界——先落盘意图再执行，失败从已完成步骤续跑；下载断点续传 + 哈希校验。
+- 执行流水线（**v0.12 起降格为部署编排环的工具后端，决议 D25**）：原六个硬编码步骤（preflight / java / download / mods / config / launch）改写为工具实现函数，调用顺序由编排环决定；步骤事务语义（先落盘意图再执行、失败续跑、下载断点续传 + 哈希校验）保留在工具内部。确定性只保留在两处：安全边界（§12）与最终验证（`probe_port` 通过才算部署成功）。
 - **执行阶段可观测性（决议 D19，v0.9.6 后实测反馈：下载完成后终端静默 4 分钟、trace 只有 LLM 步、失败原因无处可查）**：
   1. **Exec 轨迹补全**：执行流水线每个步骤（preflight / java / download / mods / config / launch）开始与结束时发布 `TraceStep(kind: Exec)`——`TraceKind::Exec` 不再是死定义；步骤中途失败时以失败摘要收尾该步骤，`TraceKind::Decision` 由决策树节点判定补发；
   2. **服务端输出全量接管**：`stdout` 与 **`stderr` 同时并读**（此前 stderr 管道接而不读——JVM 崩溃信息走 stderr 全部丢失，且 64KB 管道缓冲区写满会卡死子进程直到就绪超时）；行级合并为统一日志流，stderr 行加 `[stderr]` 前缀；
@@ -424,7 +430,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 | 包类型 | **zip 免安装包**，不用 msi/exe 安装器 | 免安装器写注册表；删除目录即卸载，天然可回滚 |
 | 镜像类型 | 默认 **JRE**（P2 若引入需 JDK 的工具再切 JDK 包） | 服务端只需 JRE；包体约为 JDK 一半，玩家下载快 |
 | 安装路径 | **Windows：`C:\Program Files\Java\<完整版本号>\bin\java.exe`（决议 D21，v0.11 修订：用户硬性要求统一位置）；Linux/macOS：`<数据目录>/runtime/jdk-<major>/<完整版本号>/`（受管目录）** | Windows 侧对齐玩家对"Java 装在哪"的普遍认知（官方安装器同位置）；其余平台保持自包含受管目录 |
-| Windows 写入策略 | 目标根不可写（普通权限进程写 Program Files 必然失败）时经 PowerShell `Start-Process -Verb RunAs` 提权完成落盘（弹**一次** UAC，用户点"是"即安装）；提权被拒或失败 → 回退数据目录受管目录并在轨迹/档案 notes 留痕。**边界：只写 `Program Files\Java` 子目录，不改注册表、不改系统 PATH、不装 msi** | 标准安装器同款交互；拒绝提权时降级不失败 |
+| Windows 写入策略 | 目标根不可写（普通权限进程写 Program Files 必然失败）时经 PowerShell `Start-Process -Verb RunAs` 提权完成落盘（弹**一次** UAC，用户点"是"即安装）；提权被拒或失败 → 回退数据目录受管目录并在轨迹/档案 notes 留痕。**v0.12 D27 加固：提权动作一律走统一入口——执行前 Notice 预告"将弹出 UAC"、120s 超时、接入取消令牌；被拒 / 超时一律降级不阻塞（v0.11.1 实测：迁移提权无超时无取消，UAC 弹窗未确认即永久挂死 4 分钟）**。**边界：只写 `Program Files\Java` 子目录，不改注册表、不改系统 PATH、不装 msi** | 标准安装器同款交互；拒绝提权时降级不失败 |
 | 选择顺序 | ① 系统 PATH 已有匹配版本 → 用系统的；② Windows 扫描 `C:\Program Files\Java\*\bin\java.exe` 主版本匹配 → 复用（**v0.11 D21**）；③ 受管目录（数据目录 runtime/）已有 → 复用（历史兼容）；④ 下载安装（v0.10.1 勘误：Adoptium 压缩包自带顶层目录，解压后实为 `<release>/<release>-jre/bin/java` 双层嵌套，复用查找只查一层导致**每个任务都重复下载**——查找改为两层探测；每次任务仍先走 ①②③，"不缺就不装"） | 尊重玩家已有环境；重复开服零下载 |
 | API | Adoptium v3：`GET /v3/assets/feature_releases/{major}/ga?os=...&arch=...&image_type=jre&page_size=1` 取元数据（含 sha256，§14.1 勘误后形态）→ 下载 zip | 元数据与二进制同源，校验值可信 |
 | 架构适配 | `std::env::consts::ARCH`（x86_64 / aarch64）+ OS 探测 | Windows on ARM 等场景自动选对包 |
@@ -471,9 +477,9 @@ enum JavaRuntime {
 | R1 Rust 主控 | 副作用不出 Rust（原则 1）；LLM 仅经自研 `llm` 客户端调用；全部编排、校验、执行在 Rust 单二进制内 |
 | R2 界面 | CLI/TUI（clap + dialoguer + indicatif）；P2 视进度以 axum + SSE 增只读 Web 状态页 |
 | R3 模型配置 | `config.toml` 的 `[model]`（endpoint / model / context_len / thinking）与 `[[prices]]` + 内置价格预设 + `.env` 的 key；`config set` 子命令改写 |
-| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新（含需求理解阶段轮次/工具/流式反馈，决议 D17；部署阶段 Exec 轨迹、服务端日志直显、就绪等待计时，决议 D19）；Ctrl-C → CancellationToken → 流水线步骤间检查点 + 进程 Drop 守卫 |
-| R5 历史管理 | `profiles/`（ServerSpec+产物清单）、`sessions/`（TaskTrace 完整轨迹，LLM 与 Exec 步骤齐备，失败原因入 error 字段——D19）、`usage/`；`sessions list/show/export` 查看、导出、导入 |
-| R6 用量统计 | `UsageRecord` 强制生成 + 价格换算；`usage` 按任务 / 阶段汇总；预算守卫调用前拦截，超限取消任务 |
+| R4 进度与打断 | `ProgressEvent` 广播 → indicatif 实时刷新（含需求理解阶段轮次/工具/流式反馈，决议 D17；部署阶段 Exec 轨迹、服务端日志直显、就绪等待计时，决议 D19；**v0.12 部署编排环逐工具发布进度与轨迹，D25**）；Ctrl-C → CancellationToken → 工具间检查点 + 长工具内取消（下载 / 提权 / 就绪等待）+ 进程 Drop 守卫 |
+| R5 历史管理 | `profiles/`（ServerSpec+产物清单）、`sessions/`（TaskTrace 完整轨迹，LLM / Tool / Exec 步骤齐备——**v0.12 起部署环每次工具调用均入轨迹（D26）**，失败原因入 error 字段——D19）、`usage/`；`sessions list/show/export` 查看、导出、导入 |
+| R6 用量统计 | `UsageRecord` 强制生成 + 价格换算；`usage` 按任务 / 阶段汇总；预算守卫调用前拦截，超限取消任务；**v0.12 部署编排环轮次以 `phase=Provision` 独立计量展示（D28）** |
 
 ## 10. 技术选型
 
@@ -502,7 +508,7 @@ enum JavaRuntime {
 | 数据 | 来源 | 用途 | 备注 |
 | --- | --- | --- | --- |
 | MC 版本清单 / 原版服务端 | Mojang piston-meta API | 版本校验、原版服下载 | 国内可达性：代理 / 镜像 |
-| Spigot 服务端 jar | **getbukkit 镜像**（`api.getbukkit.org/v2/download/spigot/<版本>` 取直链与哈希，单请求 15s 快速失败；回退直链 `download.getbukkit.org/spigot/spigot-<版本>.jar`） | Spigot 服下载（v0.11 D22） | **第三方镜像**：SpigotMC 官方不提供直链（仅 BuildTools 编译分发）。镜像返回哈希则强制校验，拿不到时下载仍走 HTTPS 并在轨迹明示"第三方来源无官方哈希"；目标用户无代理（v0.11.1 明确），失败出路：重试 / 安装目录已有同名 jar 自动复用（有哈希校验、无哈希明示）/ BuildTools 手动编译指引，不自动化 |
+| Spigot 服务端 jar | **getbukkit（v0.12 实测勘误，2026-08-31 抓站验证）**：① 列表页 `getbukkit.org/download/spigot` 可直连，52 个版本行（26.2 在列，82.64 MB），每行下载按钮为**不透明令牌链接** `getbukkit.org/get/<token>`（token 会变，**必须每次抓页解析，禁止硬编码**）；② `GET /get/<token>` 返回 **302 → `cdn.getbukkit.org/spigot/spigot-<版本>.jar`**（真 CDN 域名）。渠道顺序：工作区 jar 复用 → 抓列表页解析 token → 跟随 302 下载；旧实现的 `download.getbukkit.org` 拼接与 `api.getbukkit.org/v2`（实测超时半死）仅作最后候选 | Spigot 服下载（v0.11 D22，v0.12 D25 重构） | **第三方镜像**：SpigotMC 官方不提供直链（仅 BuildTools 编译分发）。页面无哈希，轨迹明示"第三方来源未校验"；目标用户无代理（v0.11.1 明确），失败出路：重试 / 安装目录已有同名 jar 自动复用 / BuildTools 手动编译指引，不自动化 |
 | Paper 构建与下载 | PaperMC API | Paper 服下载 | 同上 |
 | Fabric 版本与安装器 | Fabric meta / maven | Fabric 服搭建 | 同上 |
 | mod 元数据 | Modrinth API v2 | 检索、版本匹配、依赖树、下载 | CurseForge 视需要后补 |
@@ -518,11 +524,13 @@ enum JavaRuntime {
 - 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
 - 离线模式：风险说明与缓解是决策树节点，非 LLM 自由发挥。白名单为**建议项**（v0.9.5 勘误：原设计强制必选，实测澄清循环中回答被 CLI 层丢弃导致重复追问直至超轮退出，且局域网场景强制白名单过重）：追问一次，用户可留空跳过；明确跳过后写入 `white-list=false` 正常开服，提供 ID 则写入名单并开启 `white-list` / `enforce-whitelist`——两个开关必须与名单是否非空一致，禁止出现"空白名单 + white-list=true"锁死服务器的组合。
 - 上游韧性（v0.9）：**生态时滞**——mod 对新版本构建滞后属常态（26.2 发布时暮色森林系项目仅支持 1.21.1），`resolve_mod` 必须把"mod 存在但无此版本构建"语义化为 `NoCompatibleVersion` 并附该 mod 当前最高支持版本，禁止报成"请求失败"；**API 行为变更**——Modrinth 对"过滤无结果"实测出现过 200 空数组（稳定形态）与 404 空体（间歇形态）两种返回，代码对两者统一语义化；路由与响应形状变化纳入上游勘误纪律（§14.1 同类）。
+- 执行环安全边界（v0.12 决议 D26/D27）：本地副作用工具的路径收敛——工作区 + 数据目录受管目录，写入前 canonicalize + `starts_with` 校验，越界一律拒绝；`http_download` 白名单域静默放行、白名单外先 `ask_user` 确认并留痕；提权动作统一入口（预告 + 120s 超时 + 可取消 + 降级，D27）；LLM 不可达注册表 / 系统 PATH / 防火墙（这些确认保持确定性 CLI 流程，不交给模型）。
 
 ## 13. 测试与验收策略
 
 - 单元：决策树节点（输入 → Spec 增量）、版本校验管线（含"26.2"拒绝、依赖闭包）、模式库正则、JVM 参数推导、Java 供给的版本解析与路径规则、启动脚本内容生成（java 路径含空格引号、内存参数、jar 文件名）。
 - 集成：`LlmClient` trait + Fake 实现（脚本化回复）驱动需求理解环全流程，CI 不花真钱；**SSE 解析形状回归**（决议 D16）：mock 字节流覆盖五种上游形状——增量式分片、累积式分片、分片缺 `index`、usage 块缺 `choices`、`finish_reason=length` 半截参数——逐一断言解析结果或错误文案。
+- 部署编排环回归（v0.12 D25）：Fake LLM 脚本驱动工具循环——正常序列 / `acquire_server_jar` 失败→页面解析→成功 / 连续失败→`ask_user` / 超轮退出，逐一断言收敛行为；工具后端复用既有单测（Java 供给、启动脚本、jar 复用）；spigot e2e 验收改为走编排环全流程。
 - 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。**Spigot 一次跑通验收（v0.11）**：`cargo test -- --ignored` 的 spigot e2e——spigot + 26.2 → Java 供给 → 镜像下载 → 配置/start.bat → 启动 → 就绪后本机 TCP 连通 `127.0.0.1:25565` 再停止；Windows 实机跑通即本验收通过。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
 
@@ -593,6 +601,11 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | D22 | Spigot 一等公民（v0.11，用户反馈：明确说 spigot 却被安排 Paper） | `ServerSoftware` 新增 `Spigot` 变体；决策树节点 2 / CLI 选项 / agent 工具 schema / L4 提示词全链路加入 spigot，**用户点名 spigot 就用 spigot**，不得改判 Paper；下载走 getbukkit 镜像（API 取直链+哈希 → 直链模式回退），哈希可得即强制校验，不可得则轨迹明示第三方来源；BuildTools 编译列手动指引不自动化。混合认证：Spigot 属 Bukkit 生态 → 登录插件。**（v0.11.1 勘误，实测：API 探测曾继承 120s 客户端超时且未接取消令牌，国内网络下表现为数分钟静默假死、Ctrl-C 无效——改为单请求 15s 快速失败 + 整体接入取消令牌 + 步骤开始即发进度；目标用户无代理可用（用户明确），失败出路为"重试 / 手动放置 jar 自动复用 / BuildTools 指引"，不引导配代理。新增 jar 复用通道：安装目录已有同名 jar 时，有哈希则校验通过复用、哈希不符重新下载，无哈希（镜像常态）则明示"第三方来源未校验"后复用）** |
 | D23 | 启动脚本落盘（v0.11，用户反馈：没有 start.bat） | 配置生成步骤写 `start.bat`（Windows）/ `start.sh`：`cd /d %~dp0` + 绝对路径 java（含空格加引号）+ `-Xms/-Xmx` + `-jar <jar 文件名> nogui`；与 mcha 托管启动完全同参数，用户可脱离 mcha 双击自启 |
 | D24 | 镜像默认启用（v0.11，用户反馈：GitHub 下载 Java 困难） | `[network] adoptium_mirror` 默认值 = 清华 TUNA Adoptium 镜像（国内开箱即用）；config 显式置空关闭；下载顺序镜像优先、官方回退，同一 sha256 校验不变 |
+| D25 | 部署编排 Agent 化（v0.12，用户定性批评："AI Agent 应该由 LLM 发工具调用自主解决问题；下载不下来就崩，这是自动化脚本不是 Agent"） | 部署阶段改为 LLM 工具循环编排（§8.2 部署编排环）：原硬编码流水线六步降格为工具后端，调用顺序与失败恢复（重试 / 换渠道 / 抓 getbukkit 下载页解析直链 / 问用户）由模型决定；新增通用 `http_get_text` / `http_download` 工具（v0.11 写死 getbukkit API 的架构性补课）；失败结构化回环，不再单点崩溃。确定性保留在安全边界（D26）与最终验证（probe_port） |
+| D26 | 执行环工具边界（v0.12） | 工具白名单注册 + 参数 Schema 校验；本地副作用路径收敛（工作区 + 数据目录受管目录，越界拒绝）；`http_download` 白名单外域名先确认；LLM 无注册表 / PATH / 防火墙工具；每次工具调用入 TraceStep(kind: Tool)（R5） |
+| D27 | 提权统一入口与挂死防护（v0.12，v0.11.1 实测：UAC 迁移提权无超时无取消，弹窗未确认即永久挂死） | 所有提权动作（JRE 迁移 / 首装解压落盘）统一走 `run_elevated_ps`：前置 Notice 预告"将弹出 UAC"、120s 超时、接入取消令牌；被拒 / 超时降级（数据目录 JRE）并在轨迹留痕，绝不阻塞任务 |
+| D28 | 部署环计量与轮数（v0.12） | `UsageRecord.phase` 新增 `Provision`；编排环最大轮数默认 10（config `[deploy] provision_max_rounds` 可调）；连续 3 次工具失败强制收敛（ask_user 或结构化失败）；费用在 R6 界面按阶段展示 |
+| D29 | Java 需求口径（v0.12，用户审阅决策树时定："静态查优先，查不到就联网查"） | 决策树节点 4 改为：L1 静态表优先 → 表中无此版本时联网查 piston-meta `javaVersion.majorVersion` → 两处都失败**显式标注"未知，待部署校准"**（不再静默默认 21）。部署 preflight 的官方清单校准保留为最后一道网（既有 v0.9 机制不变） |
 
 ## 16. 里程碑与风险
 
@@ -610,6 +623,7 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 上游 API 国内不可达 | 部署失败 | 代理与镜像统一机制（含 Adoptium 镜像）；失败归因明确 |
 | 穿透依赖外部账号与实名 | FR-08 演示受阻 | 提前注册测试账号并完成实名；隧道经 API 查重复用；M3 起做；录屏兜底 |
 | LLM 结构化输出不稳定 | 方案生成失败 | Schema 校验 + 重试 + 降级逐项问答 |
+| 部署编排环 LLM 不确定性（v0.12 新增） | 步骤错序 / 幻觉 URL / 打转烧钱 | 工具白名单 + 参数 Schema 校验 + 路径收敛（D26）；下载域白名单外需确认；连续失败与超轮强制收敛（D28）；Fake LLM 回归覆盖异常路径 |
 | 课堂网络不可控 | 现场演示翻车 | 提前缓存全部构件的离线演示路径 + 录屏兜底 |
 | 范围蔓延 | 偏离"只做一件事" | 以 §1 边界与决策树为冻结范围，新想法记 backlog |
 | 目标演示/使用环境为 Windows，开发在 Linux，尚无 Windows 实测 | 编译 / 数据目录 / 进程守卫 / 防火墙提示等平台差异翻车 | 代码已按跨平台编写（cfg(unix) 仅权限位、start_kill 双平台可用）；`scripts/bootstrap-windows.ps1` 引导脚本降低环境搭建门槛；M2 首项任务即 Windows 实测清单（MSVC 工具链编译、%APPDATA% 数据目录、Ctrl-C 停进程、防火墙首启提示）；README 补 Windows 构建章节 |
@@ -642,3 +656,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-31 | v0.10.2 | 目录彻底拍平（用户反馈 `mc-6p` 层累赘）：服务端文件直接落在 `<工作区>/`，spec_id 不再参与目录布局（仅档案命名与 motd）；新增目标目录已有服务器文件的确认拦截（交互确认 / `--yes` 拒绝），防止静默混用用户文件（D11 修订）。§8.7 同步更新 |
 | 2026-08-31 | v0.11 | 「Spigot 一次跑通」专项（用户四项反馈：GitHub 下载 Java 困难 / Java 路径不合要求 / 指名 spigot 被安排 Paper / 没有 start.bat）。决议 **D21**：Windows 受管 JRE 统一装 `C:\Program Files\Java\<版本>\`（提权写入 + 回退）；决议 **D22**：`ServerSoftware::Spigot` 一等公民，全链路（决策树/CLI/工具 schema/L4 提示词）加入 spigot，下载走 getbukkit 镜像（§11 数据源补行）；决议 **D23**：配置生成落盘 start.bat/start.sh（§8.5）；决议 **D24**：`adoptium_mirror` 默认清华 TUNA。§8.1/§8.5/§8.8/§11/§13/§15 同步更新 |
 | 2026-08-31 | v0.11.1 | Windows 实测复盘（session-backup 9fb00ad1：spec 正确落 spigot、Java ✔ 后轨迹停在 running 无收尾——下载步骤静默假死，Ctrl-C 无效被杀窗口）。① **D22 勘误**：getbukkit API 探测改单请求 15s 快速失败，`server_jar_item` 接入取消令牌，下载步骤开始即发进度事件；失败出路不再引导配代理（目标用户无代理，用户明确），改为重试 / 手动放置 jar 自动复用（有哈希校验、无哈希明示第三方来源）/ BuildTools 指引；② **D21 补充**：数据目录旧受管 JRE 在 Windows 下自动迁移到 `C:\Program Files\Java\`（可移动则移动，否则 UAC；拒绝回退留痕）。§15 同步更新 |
+| 2026-08-31 | v0.12 | **部署编排 Agent 化**（用户定性批评 + session-backup f4a0798d 复盘：v0.11.1 新引入的 JRE 迁移 UAC 提权无超时无取消，弹窗未确认即永久挂死 4 分钟——修复一个挂死又造一个挂死，根源是执行阶段本就是硬编码流水线，每个真实世界意外都要改代码加分支）。决议 **D25**：部署阶段改为 LLM 工具循环（§8.2 部署编排环），流水线六步降格为工具后端，失败结构化回环（重试 / 换渠道 / 抓 getbukkit 页面解析直链 / 问用户），新增通用 `http_get_text` / `http_download`；决议 **D26**：执行环工具白名单与路径收敛；决议 **D27**：提权统一入口（预告 + 120s 超时 + 可取消 + 降级）；决议 **D28**：phase=Provision 独立计量 + 轮数上限 10 + 连续失败收敛。§8.1/§8.2/§8.5/§8.8/§9/§11/§12/§13/§16 同步更新 |
+| 2026-08-31 | v0.12.1 | 抓站实测勘误 + 决策树审阅决议：① 用户实测确认 `getbukkit.org/download/spigot` 可直连，本助手抓站复核——列表页 52 版本行、下载按钮为不透明令牌 `/get/<token>`、302 → `cdn.getbukkit.org/spigot/spigot-<版本>.jar`；旧实现写死的 `download.getbukkit.org` 为过时域名、`api.getbukkit.org/v2` 实测超时半死——**失败根因定性为"写死 URL 模式腐化"，§11/D22 更新为抓页解析渠道**；② 决议 **D29**（用户审阅决策树）：节点 4 Java 需求口径改静态优先→联网兜底→显式未知，不再静默默认 21 |

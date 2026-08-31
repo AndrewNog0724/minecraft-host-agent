@@ -176,6 +176,86 @@ impl HttpBase {
         serde_json::from_value(value).map_err(|e| UpstreamError::Json { url, source: e })
     }
 
+    /// GET 响应体为文本，带单请求超时、大小上限与取消感知（决议 D25：
+    /// 执行环工具 `http_get_text` 的底座，也是 getbukkit 页面解析渠道的实现件）。
+    /// 流式读取并全程守护上限，防 Content-Length 缺失或撒谎。
+    pub async fn get_text_capped(
+        &self,
+        url: &str,
+        timeout: std::time::Duration,
+        max_bytes: usize,
+        cancel: CancellationToken,
+    ) -> Result<String, UpstreamError> {
+        let url = self.apply_mirrors(url);
+        let resp = self.http.get(&url).timeout(timeout).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(UpstreamError::Status {
+                url,
+                status: status.as_u16(),
+                body: String::new(),
+            });
+        }
+        if let Some(len) = resp.content_length()
+            && len as usize > max_bytes
+        {
+            return Err(UpstreamError::BadResponse(format!(
+                "响应体 {len} 字节超过上限 {max_bytes}（拒绝读取）"
+            )));
+        }
+        let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+        let mut stream = resp.bytes_stream();
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(UpstreamError::Cancelled),
+                chunk = futures::StreamExt::next(&mut stream) => {
+                    let Some(chunk) = chunk else { break };
+                    let bytes = chunk?;
+                    if buf.len() + bytes.len() > max_bytes {
+                        return Err(UpstreamError::BadResponse(format!(
+                            "响应体超过大小上限 {max_bytes}（已读 {} 字节）",
+                            buf.len() + bytes.len()
+                        )));
+                    }
+                    buf.extend_from_slice(&bytes);
+                }
+            }
+        }
+        String::from_utf8(buf)
+            .map_err(|e| UpstreamError::BadResponse(format!("非 UTF-8 文本：{e}")))
+    }
+
+    /// 发起 GET 但**不跟随重定向**，返回 3xx 的 Location 目标（决议 D25：
+    /// getbukkit `/get/<token>` → `cdn.getbukkit.org` 直链的解析件，v0.12.1
+    /// 抓站实测该跳转是取得真直链的唯一可靠途径）。用一次性无重定向客户端，
+    /// 不影响共享底座的重定向策略。
+    pub async fn resolve_redirect(
+        &self,
+        url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String, UpstreamError> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .user_agent("mcha/0.1 (course project)")
+            .build()?;
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        if status.is_redirection() {
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| UpstreamError::BadResponse("3xx 响应缺 Location 头".into()))?;
+            Ok(loc.to_string())
+        } else {
+            Err(UpstreamError::BadResponse(format!(
+                "期望 3xx 重定向，实际状态 {status}"
+            )))
+        }
+    }
+
     /// 下载文件到 dest_dir：临时文件 + 哈希校验 + 原子改名（NFR-3）。
     /// 瞬时网络失败整体重试（临时文件会被重建，安全）。
     /// `on_progress(current, total)` 供上层发进度事件。
@@ -447,9 +527,82 @@ pub struct SpigotClient {
 impl SpigotClient {
     pub const API: &str = "https://api.getbukkit.org/v2/download/spigot";
     pub const DOWNLOAD_ROOT: &str = "https://download.getbukkit.org/spigot";
+    /// 列表页（v0.12.1 抓站实测：可直连，52 个版本行，每行下载按钮为
+    /// 不透明令牌链接 `/get/<token>`，token 会变必须每次抓页解析）。
+    pub const LISTING: &str = "https://getbukkit.org/download/spigot";
 
     pub fn new(base: HttpBase) -> Self {
         Self { base }
+    }
+
+    /// 解析列表页 HTML 的 `<版本, 令牌>` 对（v0.12.1 抓站实测页面结构：
+    /// 每行 `<h4>Version</h4><h2>26.2</h2>` … `<a href="…/get/<token>">`；
+    /// 出现顺序即发布顺序）。纯函数便于单测。
+    fn parse_listing_tokens(html: &str) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        for seg in html.split("<h4>Version</h4>").skip(1) {
+            let version = seg
+                .split("<h2>")
+                .nth(1)
+                .and_then(|s| s.split("</h2>").next())
+                .map(str::trim)
+                .unwrap_or_default();
+            let token = seg
+                .split("getbukkit.org/get/")
+                .nth(1)
+                .map(|s| {
+                    s.chars()
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            if !version.is_empty() && !token.is_empty() {
+                pairs.push((version.to_string(), token));
+            }
+        }
+        pairs
+    }
+
+    /// 渠道⓪（v0.12 D25 首选）：抓列表页解析令牌 → 302 跟随取真直链。
+    /// 证据链（2026-08-31 抓站复核）：`GET /get/<token>` 返回
+    /// `302 → cdn.getbukkit.org/spigot/spigot-<版本>.jar`；旧实现的
+    /// `download.getbukkit.org` 为过时域名、v2 API 实测超时半死。
+    pub async fn direct_url_via_page(
+        &self,
+        mc_version: &str,
+        cancel: CancellationToken,
+    ) -> Result<DownloadItem, UpstreamError> {
+        let html = self
+            .base
+            .get_text_capped(
+                Self::LISTING,
+                std::time::Duration::from_secs(15),
+                2 * 1024 * 1024,
+                cancel,
+            )
+            .await?;
+        let token = Self::parse_listing_tokens(&html)
+            .into_iter()
+            .find(|(v, _)| v == mc_version)
+            .map(|(_, t)| t)
+            .ok_or_else(|| {
+                UpstreamError::BadResponse(format!(
+                    "列表页 {LISTING} 上没有版本 {mc_version} 的下载令牌",
+                    LISTING = Self::LISTING
+                ))
+            })?;
+        let get_url = format!("https://getbukkit.org/get/{token}");
+        let direct = self
+            .base
+            .resolve_redirect(&get_url, std::time::Duration::from_secs(15))
+            .await?;
+        Ok(DownloadItem {
+            url: direct,
+            sha1: None,
+            sha256: None,
+            file_name: format!("spigot-{mc_version}.jar"),
+            kind: DownloadKind::ServerJar,
+        })
     }
 
     /// 指定 MC 版本的 Spigot 服务端下载项。

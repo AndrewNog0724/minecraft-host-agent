@@ -185,16 +185,24 @@ pub struct DeployConfig {
     /// 服务端就绪检测上限（秒）：超时即判启动失败，避免无限静默等待。
     #[serde(default = "default_ready_timeout_secs")]
     pub ready_timeout_secs: u64,
+    /// 部署编排环最大轮数（决议 D28）：LLM 工具循环的硬上限，防打转烧钱。
+    #[serde(default = "default_provision_max_rounds")]
+    pub provision_max_rounds: u32,
 }
 
 fn default_ready_timeout_secs() -> u64 {
     240
 }
 
+fn default_provision_max_rounds() -> u32 {
+    10
+}
+
 impl Default for DeployConfig {
     fn default() -> Self {
         Self {
             ready_timeout_secs: default_ready_timeout_secs(),
+            provision_max_rounds: default_provision_max_rounds(),
         }
     }
 }

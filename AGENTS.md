@@ -25,9 +25,10 @@
 
 - [ ] 选题确认（截止 08-30 23:59:59）
 - [ ] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows，手册见 `experiments/general-agent-baseline.md`）
-- [x] 需求 / 设计文档（痛点分析、场景定制方案、架构、技术选型）——`docs/project-design.md` v0.5
+- [x] 需求 / 设计文档（痛点分析、场景定制方案、架构、技术选型）——`docs/project-design.md` v0.12.1
 - [x] 最小可用版本（MVP）——一句话开服主流程走通；R1–R6 全部落地；端到端测试通过（见 `src/provision/exec.rs` ignored 集成测试）
 - [x] R1–R6 完整实现（诊断 FR-09 与穿透 FR-08 为 P1，随互试版交付）
+- [x] v0.12 部署编排 Agent 化（决议 D25–D29：LLM 工具循环部署、提权统一入口、getbukkit 抓页解析渠道、Java 需求静态优先→联网兜底）；待 Windows 实机验收
 - [ ] 提交版设计文档定稿
 - [ ] README 补全配置与演示章节（已完成初版，随功能迭代持续更新）
 

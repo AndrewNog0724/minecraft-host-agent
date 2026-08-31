@@ -108,13 +108,17 @@ cargo run --release -- config set workspace.path D:\mc-servers  # 服务端安�
 adoptium_mirror = ""
 ```
 
-### Spigot 获取失败怎么办（决议 D22，v0.11.1）
+### 部署编排环是怎么工作的（决议 D25，v0.12）
 
-SpigotMC 官方不提供 jar 直链（只随 BuildTools 编译分发），mcha 走 getbukkit 第三方镜像（API 探测 15 秒快速失败 → 直链回退）。镜像彻底不可达时按提示三选一：
+确认方案后，部署不再是固定流水线，而是由 LLM 逐工具调用编排：`probe_workspace`（盘点工作区）→ `ensure_java`（Java 供给，Windows 可能弹一次 UAC）→ `acquire_server_jar`（多渠道获取服务端 jar）→ `write_server_files`（eula/配置/start 启动脚本）→ `start_server`（启动 + 就绪检测）→ `probe_port`（本机端口验证，返回 ready 即成功）。失败不会让任务直接崩掉：工具以结构化错误回传，模型自行重试、换渠道、抓页面解析直链或向你确认（`ask_user`）。轨迹（`mcha sessions show`）里可以看到每一轮的工具调用与结果；编排环的 token 消耗在 `mcha usage` 中以「部署编排」阶段单独计量。
 
-1. **稍后重试**（镜像偶发抖动）；
-2. **手动放置 jar**：自己从 `https://download.getbukkit.org/spigot/spigot-<版本>.jar` 下载，放进服务端安装目录后重跑 mcha——同名 jar 会被自动复用（该来源无官方哈希，复用会在轨迹中明示"第三方来源未校验"）；
-3. **BuildTools 手动编译**（官方正源）：`java -jar BuildTools.jar --rev <版本>`，需要 git 与 JDK；把产物 `spigot-<版本>.jar` 放进安装目录后同样走通道 2 复用。
+### Spigot 获取失败怎么办（决议 D22/D25，v0.12）
+
+SpigotMC 官方不提供 jar 直链（只随 BuildTools 编译分发），mcha 首选**抓取 getbukkit 下载页解析直链**（`getbukkit.org/download/spigot` → 版本令牌 → 302 → `cdn.getbukkit.org` 真直链，v0.12.1 抓站实测），失败再回退 API/直链拼接渠道。全部渠道不可达时：
+
+1. **稍后重试**（编排环内直接说"重试"即可，或重跑 mcha）；
+2. **手动放置 jar**：从浏览器打开 `https://getbukkit.org/download/spigot` 点 Download 下载 `spigot-<版本>.jar`，放进服务端安装目录后重跑 mcha——同名 jar 会被自动复用（该来源无官方哈希，轨迹会明示"第三方来源未校验"）；
+3. **BuildTools 手动编译**（官方正源）：`java -jar BuildTools.jar --rev <版本>`，需要 git 与 JDK；把产物放进安装目录同样走通道 2 复用。
 
 ## 演示用例
 
@@ -128,11 +132,11 @@ cargo run --release -- new "我要用 Spigot 服玩 MC 26.2 原版，不加 mod"
 ```
 
 工具将：调用 LLM 解析需求 → 决策树推导完整方案（混合认证 EasyAuth、Fabric 服、
-Java 21、内存分配、白名单）→ 就缺失信息追问（≤3 轮）→ 展示方案摘要与风险提示 →
-确认后自动完成部署（Java 供给 → 服务端下载 → 配置 + `start.bat` → 启动到 Done）→
-输出"朋友们怎么连"（本机连接地址 `127.0.0.1:25565`）。
+Java 需求、内存分配、白名单）→ 就缺失信息追问（≤3 轮）→ 展示方案摘要与风险提示 →
+确认后由部署编排环完成（LLM 调度工具：Java 供给 → 服务端下载 → 配置 + `start.bat`
+→ 启动到就绪 → 端口验证）→ 输出"朋友们怎么连"（本机连接地址 `127.0.0.1:25565`）。
 
-### 2. 无 LLM 的手动方案（离线演示兜底）
+### 2. 手动方案（跳过需求解析，部署仍走编排环）
 
 ```bash
 cargo run --release -- plan

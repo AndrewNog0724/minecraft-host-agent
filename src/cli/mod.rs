@@ -162,17 +162,15 @@ async fn cmd_new(
     };
 
     // 4. 决策树 + 澄清问答循环（最多 3 轮；决策树是纯函数，合并回答后重推导）
-    let releases = {
-        let deps = AgentDeps::new(kb.clone(), cfg.clone())?;
-        deps.known_releases().await.unwrap_or_default()
-    };
+    let deps = AgentDeps::new(kb.clone(), cfg.clone())?;
+    let releases = deps.known_releases().await.unwrap_or_default();
     let mut merged = draft.partial.clone();
     // 累积回答表：每轮传给决策树（v0.9.5 修复——此前恒传空表，
     // 白名单等未落入 PartialSpec 的回答被静默丢弃，导致重复追问直至超轮）
     let mut answered = Answers::new();
     let mut spec: Option<ServerSpec> = None;
     for _round in 0..3 {
-        match derive_spec(&merged, &answered, &kb, Some(&releases)) {
+        match derive_spec(&merged, &answered, &kb, Some(&releases), Some(&deps.http)).await {
             TreeOutput::Complete(s) => {
                 spec = Some(*s);
                 break;
@@ -226,9 +224,11 @@ async fn cmd_new(
         spec: Box::new(spec.clone()),
     });
 
-    // 6. 确定性执行流水线
+    // 6. 部署编排环（决议 D25）：需求环结束后按同一配置构建编排环所用 LLM 服务
+    let svc = LlmService::new(&cfg, bus.clone(), Arc::new(crate::llm::SpendLedger::new()))
+        .context("初始化 LLM 客户端失败（部署编排环需要）")?;
     let ctx = DeployContext::new(cfg, kb, bus.clone(), cancel.clone())?;
-    let deploy_result = deploy(&mut spec, &ctx, &task_id).await;
+    let deploy_result = deploy(&mut spec, &ctx, &task_id, &svc).await;
 
     match deploy_result {
         Ok(result) => {
@@ -552,15 +552,13 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
         Confirm::new().with_prompt("朋友跨网络联机？").interact()
     })?);
 
-    let releases = {
-        let deps = AgentDeps::new(kb.clone(), cfg.clone())?;
-        deps.known_releases().await.unwrap_or_default()
-    };
+    let deps = AgentDeps::new(kb.clone(), cfg.clone())?;
+    let releases = deps.known_releases().await.unwrap_or_default();
     // 同 cmd_new（v0.9.5）：累积回答表逐轮传入，并加 3 轮上限（原为无限循环）
     let mut answered = Answers::new();
     let mut resolved: Option<ServerSpec> = None;
     for _round in 0..3 {
-        match derive_spec(&partial, &answered, &kb, Some(&releases)) {
+        match derive_spec(&partial, &answered, &kb, Some(&releases), Some(&deps.http)).await {
             TreeOutput::Complete(s) => {
                 resolved = Some(*s);
                 break;
@@ -614,8 +612,11 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
         spec: Box::new(spec.clone()),
     });
 
+    // 手动方案仍需 LLM 编排部署（决议 D25：部署阶段 Agent 化，无纯确定性路径）
+    let svc = LlmService::new(&cfg, bus.clone(), Arc::new(crate::llm::SpendLedger::new()))
+        .context("初始化 LLM 客户端失败（部署编排环需要，可用 `mcha setup` 配置）")?;
     let ctx = DeployContext::new(cfg, kb, bus.clone(), cancel.clone())?;
-    match deploy(&mut spec, &ctx, &task_id).await {
+    match deploy(&mut spec, &ctx, &task_id, &svc).await {
         Ok(result) => {
             store.save_profile(&spec)?;
             println!("\n=== 部署完成 ===");
@@ -737,6 +738,7 @@ fn cmd_usage() -> anyhow::Result<()> {
     println!("调用次数：{}", records.len());
     for (name, phase) in [
         ("需求理解", Phase::Requirement),
+        ("部署编排", Phase::Provision),
         ("诊断", Phase::Diagnosis),
         ("对话", Phase::Chat),
     ] {

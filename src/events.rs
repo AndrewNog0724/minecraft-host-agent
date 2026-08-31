@@ -53,6 +53,7 @@ pub enum ProgressEvent {
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Requirement,
+    Provision,
     Diagnosis,
     Chat,
 }

@@ -908,3 +908,68 @@ mod tests {
         assert_eq!(escape_control_chars(s), s, "字符串外的换行是合法 JSON 空白");
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    //! 脚本化 Fake LLM（需求环 / 编排环 / 执行 e2e 共用，§13，CI 不花真钱）。
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio_util::sync::CancellationToken;
+
+    /// 按序弹出预设响应的客户端；`new` 传入的顺序即执行顺序。
+    pub(crate) struct ScriptedClient {
+        calls: Mutex<Vec<LlmResponse>>,
+    }
+
+    impl ScriptedClient {
+        pub(crate) fn new(responses: Vec<LlmResponse>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(responses.into_iter().rev().collect()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for ScriptedClient {
+        async fn chat(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[ToolDecl],
+            _cancel: CancellationToken,
+            _on_tick: Option<StreamTick>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .pop()
+                .ok_or_else(|| LlmError::Stream("脚本耗尽".into()))
+        }
+    }
+
+    pub(crate) fn resp_tool(name: &str, args: serde_json::Value) -> LlmResponse {
+        LlmResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: format!("call-{name}"),
+                r#type: None,
+                function: ToolCallFn {
+                    name: name.into(),
+                    arguments: args.to_string(),
+                },
+            }],
+            usage: Usage::default(),
+            finish_reason: Some("tool_calls".into()),
+            notes: vec![],
+        }
+    }
+
+    pub(crate) fn resp_text(content: &str) -> LlmResponse {
+        LlmResponse {
+            content: content.into(),
+            tool_calls: vec![],
+            usage: Usage::default(),
+            finish_reason: Some("stop".into()),
+            notes: vec![],
+        }
+    }
+}

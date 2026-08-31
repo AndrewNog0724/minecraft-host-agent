@@ -33,11 +33,14 @@ pub enum TreeOutput {
 /// 单轮推导入口：输入 = LLM 产出的 [`PartialSpec`] + 历史回答 + 知识库。
 /// `known_releases` 是 Mojang 官方正式版清单缓存（None = 本轮不校验存在性，
 /// 由流水线预检兜底）；传入了它就能对幻觉版本号给出就近建议（验收要求）。
-pub fn derive_spec(
+/// `http` 用于节点 4 的联网兜底（决议 D29：静态表优先，表缺该版本时查
+/// 官方清单；两者皆无 → 显式标注"未知，待部署校准"，绝不静默默认）。
+pub async fn derive_spec(
     draft: &PartialSpec,
     answers: &Answers,
     kb: &KnowledgeBase,
     known_releases: Option<&[String]>,
+    http: Option<&crate::knowledge::upstream::HttpBase>,
 ) -> TreeOutput {
     let mut spec = ServerSpec::new(spec_id_for(draft, answers, kb));
     let mut questions: Vec<Question> = Vec::new();
@@ -52,17 +55,38 @@ pub fn derive_spec(
     // ── 节点 3：MC 版本（知识库 + 官方清单校验）──────────────────
     apply_mc_version(&mut spec, draft, answers, known_releases, &mut questions);
 
-    // ── 节点 4：Java 大版本（纯查表，不问用户）───────────────────
+    // ── 节点 4：Java 大版本（决议 D29：静态优先 → 联网兜底 → 显式未知）──
     if !spec.mc_version.is_empty() {
-        let major = kb.java_major_for(&spec.mc_version).unwrap_or(21);
+        let (major, source_note) = match kb.java_major_for(&spec.mc_version) {
+            Some(m) => (m, ""),
+            None => match http {
+                Some(http) => {
+                    match crate::knowledge::upstream::MojangClient::new(http.clone())
+                        .version_java_major(&spec.mc_version)
+                        .await
+                    {
+                        Ok(Some(m)) => (m, "（经官方清单动态核实）"),
+                        _ => (0, ""),
+                    }
+                }
+                None => (0, ""),
+            },
+        };
         spec.java = JavaPlan {
             required_major: major,
             runtime: JavaRuntime::Pending,
         };
-        spec.notes.push(format!(
-            "MC {} 需要 Java {major}，将由本工具自动供给",
-            spec.mc_version
-        ));
+        if major == 0 {
+            spec.notes.push(format!(
+                "MC {} 的 Java 需求暂未能确认（静态表无此版本且官方清单不可达），部署预检将动态校准后再供给",
+                spec.mc_version
+            ));
+        } else {
+            spec.notes.push(format!(
+                "MC {} 需要 Java {major}{source_note}，将由本工具自动供给",
+                spec.mc_version
+            ));
+        }
     }
 
     // ── 节点 5：玩家数 / JVM 内存（规则推导，不问用户）────────────
@@ -452,8 +476,8 @@ mod tests {
     }
 
     /// 基线实验 T4 型复合需求："我们 5 个人，2 个正版 3 个离线，想玩带暮色森林的生存"
-    #[test]
-    fn 复合需求推导覆盖全部必选节点() {
+    #[tokio::test]
+    async fn 复合需求推导覆盖全部必选节点() {
         let draft = PartialSpec {
             online_players: Some(2),
             offline_players: Some(3),
@@ -462,7 +486,7 @@ mod tests {
             ..Default::default()
         };
         // 第一轮：缺白名单与网络信息，必须追问
-        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()), None).await;
         let TreeOutput::NeedInput { questions } = out else {
             panic!("缺少白名单与网络信息，应追问");
         };
@@ -474,7 +498,8 @@ mod tests {
         let mut answers = Answers::new();
         answers.insert("whitelist".into(), "a, b, c".into());
         answers.insert("cross_network".into(), "yes".into());
-        let TreeOutput::Complete(spec) = derive_spec(&draft, &answers, &kb(), Some(&releases()))
+        let TreeOutput::Complete(spec) =
+            derive_spec(&draft, &answers, &kb(), Some(&releases()), None).await
         else {
             panic!("信息齐备应收敛");
         };
@@ -495,14 +520,14 @@ mod tests {
         assert!(topics.contains(&"cross_network"));
     }
 
-    #[test]
-    fn 幻觉版本号给出建议并被拒() {
+    #[tokio::test]
+    async fn 幻觉版本号给出建议并被拒() {
         let draft = PartialSpec {
             mc_version: Some("26.2".into()), // 基线实验幻觉样例
             cross_network: Some(false),
             ..Default::default()
         };
-        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()), None).await;
         let TreeOutput::NeedInput { questions, .. } = out else {
             panic!("幻觉版本必须触发追问");
         };
@@ -513,8 +538,8 @@ mod tests {
 
     /// v0.9.6 实测缺陷回归：归一化串（26.2.0）不得进 spec，
     /// 语义命中清单时写官方原文 id（26.2），否则 preflight 比对自相矛盾。
-    #[test]
-    fn 归一化串校正为清单原文id() {
+    #[tokio::test]
+    async fn 归一化串校正为清单原文id() {
         let releases: Vec<String> = ["26.2", "26.1", "1.21.1"]
             .iter()
             .map(|s| s.to_string())
@@ -531,7 +556,7 @@ mod tests {
 
         // 26.2.0 → 校正为清单原文 26.2，并留痕
         let TreeOutput::Complete(spec) =
-            derive_spec(&mk("26.2.0"), &answers, &kb(), Some(&releases))
+            derive_spec(&mk("26.2.0"), &answers, &kb(), Some(&releases), None).await
         else {
             panic!("26.2.0 语义合法应收敛");
         };
@@ -540,7 +565,8 @@ mod tests {
         assert_eq!(spec.java.required_major, 25, "Java 需求查表不受影响");
 
         // 原文输入原样保留，不加校正痕迹
-        let TreeOutput::Complete(spec) = derive_spec(&mk("26.2"), &answers, &kb(), Some(&releases))
+        let TreeOutput::Complete(spec) =
+            derive_spec(&mk("26.2"), &answers, &kb(), Some(&releases), None).await
         else {
             panic!("清单原文应收敛");
         };
@@ -550,8 +576,8 @@ mod tests {
 
     /// v0.9.6 同类缺陷回归：清单为新版本在前，追问选项必须取前 5（最新），
     /// 不得反转成最老的 5 个版本。
-    #[test]
-    fn 版本追问选项取最新一批() {
+    #[tokio::test]
+    async fn 版本追问选项取最新一批() {
         let releases: Vec<String> = [
             "26.2", "26.1", "1.21.1", "1.21", "1.20.6", "1.20.4", "1.19.2",
         ]
@@ -564,7 +590,7 @@ mod tests {
             cross_network: Some(false),
             ..Default::default()
         };
-        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases));
+        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases), None).await;
         let TreeOutput::NeedInput { questions, .. } = out else {
             panic!("缺版本应追问");
         };
@@ -575,8 +601,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn 回答齐备后完整收敛() {
+    #[tokio::test]
+    async fn 回答齐备后完整收敛() {
         let draft = PartialSpec {
             online_players: Some(2),
             offline_players: Some(3),
@@ -588,7 +614,7 @@ mod tests {
         let mut answers = Answers::new();
         answers.insert("whitelist".into(), "alice, bob".into());
         answers.insert("cross_network".into(), "yes".into());
-        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()), None).await;
         let TreeOutput::Complete(spec) = out else {
             panic!("信息齐备应收敛");
         };
@@ -602,8 +628,8 @@ mod tests {
         assert!(!spec.notes.is_empty(), "离线/混合风险必须进 notes（FR-17）");
     }
 
-    #[test]
-    fn 全离线建议白名单且追问可跳过() {
+    #[tokio::test]
+    async fn 全离线建议白名单且追问可跳过() {
         let draft = PartialSpec {
             account_kind: Some("offline".into()),
             software: Some("vanilla".into()),
@@ -612,7 +638,7 @@ mod tests {
             ..Default::default()
         };
         // 未回答过白名单 → 追问一次，且必须允许留空跳过
-        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()), None).await;
         let TreeOutput::NeedInput { questions, .. } = out else {
             panic!("缺白名单应追问");
         };
@@ -625,7 +651,7 @@ mod tests {
         // 空回答 = 明确跳过 → 正常收敛，白名单为空，但风险提示必须保留
         let mut answers = Answers::new();
         answers.insert("whitelist".into(), String::new());
-        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()), None).await;
         let TreeOutput::Complete(spec) = out else {
             panic!("跳过白名单后应收敛，不得再追问");
         };
@@ -641,8 +667,8 @@ mod tests {
 
     /// v0.10.1 实测回归（决议 D20）：LLM 交卷的英文选项此前被精确匹配拒收后
     /// **静默默认 Online**，离线玩家进服报"无效会话"。归一化后必须落到离线。
-    #[test]
-    fn 账号英文选项归一化_离线不得误判为正版() {
+    #[tokio::test]
+    async fn 账号英文选项归一化_离线不得误判为正版() {
         assert_eq!(
             classify_account_kind("All offline (cracked)"),
             Some("offline")
@@ -669,13 +695,44 @@ mod tests {
         };
         let mut answers = Answers::new();
         answers.insert("whitelist".into(), String::new());
-        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()));
+        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()), None).await;
         let TreeOutput::Complete(spec) = out else {
             panic!("应收敛");
         };
         assert!(
             matches!(spec.account, AccountPolicy::Offline { .. }),
             "英文离线选项不得被静默判为正版验证（无效会话根因）"
+        );
+    }
+
+    /// 决议 D29：静态表没有的版本不得静默默认 21——
+    /// 无网络（http=None）时显式标注"未知，待部署校准"。
+    #[tokio::test]
+    async fn 表外版本不猜21_显式未知() {
+        // 1.7.9 在清单命中（存在性闸通过），但早于表内最老规则（1.7.10）
+        let releases: Vec<String> = ["1.7.9"].iter().map(|s| s.to_string()).collect();
+        let draft = PartialSpec {
+            account_kind: Some("offline".into()),
+            mc_version: Some("1.7.9".into()),
+            software: Some("vanilla".into()),
+            cross_network: Some(false),
+            ..Default::default()
+        };
+        let mut answers = Answers::new();
+        answers.insert("whitelist".into(), String::new());
+        let TreeOutput::Complete(spec) =
+            derive_spec(&draft, &answers, &kb(), Some(&releases), None).await
+        else {
+            panic!("应收敛");
+        };
+        assert_eq!(
+            spec.java.required_major, 0,
+            "未知必须显式为 0（部署预检动态校准），不得静默 21"
+        );
+        assert!(
+            spec.notes.iter().any(|n| n.contains("未能确认")),
+            "必须留痕待校准：{:?}",
+            spec.notes
         );
     }
 }

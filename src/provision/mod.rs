@@ -1,8 +1,10 @@
-//! provision：决策树引擎 + 执行流水线（确定性，§8.5）。
+//! provision：决策树引擎（tree.rs）+ 部署编排环（agent.rs，决议 D25）+
+//! 工具后端（exec.rs）+ Java 供给（java.rs）+ 进程托管（process.rs）。
 //!
-//! 决策树推导方案（tree.rs），执行流水线把它变成运行中的服务器
-//! （exec.rs），Java 供给（java.rs）与进程托管（process.rs）为其中两环。
+//! 方案由决策树推导；部署由 LLM 逐工具调用编排（失败结构化回环），
+//! exec.rs 的原流水线步骤全部降格为编排环的工具实现层。
 
+pub mod agent;
 pub mod exec;
 pub mod java;
 pub mod process;
