@@ -226,10 +226,12 @@ pub fn suggest_versions(available: &[String], rejected: &str, limit: usize) -> V
 }
 
 /// 加载器名称 → spec 软件类型（决策树节点 2 的模糊匹配收敛点）。
+/// 用户点名 spigot 必须落 spigot（决议 D22），不得改判 Paper。
 pub fn parse_software(name: &str) -> Option<ServerSoftware> {
     match name.trim().to_lowercase().as_str() {
         "vanilla" | "原版" => Some(ServerSoftware::Vanilla),
         "paper" => Some(ServerSoftware::Paper { build: None }),
+        "spigot" | "spigotmc" => Some(ServerSoftware::Spigot),
         "fabric" => Some(ServerSoftware::Fabric {
             loader_version: String::new(),
             installer_version: String::new(),
@@ -238,10 +240,10 @@ pub fn parse_software(name: &str) -> Option<ServerSoftware> {
     }
 }
 
-/// 混合认证方案由服务端类型决定（决策树：Paper→插件，Fabric→EasyAuth）。
+/// 混合认证方案由服务端类型决定（决策树：Paper/Spigot→插件，Fabric→EasyAuth）。
 pub fn hybrid_auth_for(software: &ServerSoftware) -> Option<HybridAuth> {
     match software {
-        ServerSoftware::Paper { .. } => Some(HybridAuth::Plugin),
+        ServerSoftware::Paper { .. } | ServerSoftware::Spigot => Some(HybridAuth::Plugin),
         ServerSoftware::Fabric { .. } => Some(HybridAuth::EasyAuth),
         ServerSoftware::Vanilla => None,
     }

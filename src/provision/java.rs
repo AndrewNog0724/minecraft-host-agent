@@ -1,8 +1,12 @@
 //! Java 自动供给（FR-02，§8.8，决议 D2：全自动受管安装，不降级）。
 //!
-//! 选择顺序：① 系统 PATH 已有匹配版本 → 用系统的；
-//! ② 受管目录已有 → 复用；③ Adoptium 官方渠道下载 zip 免安装包。
-//! 只写受管目录 `<数据目录>/runtime/jdk-<major>/`，绝不碰系统位置。
+//! 选择顺序（v0.11 决议 D21 修订）：① 系统 PATH 已有匹配版本 → 用系统的；
+//! ② Windows 扫描 `C:\Program Files\Java\*`（用户硬性要求的统一安装位置）；
+//! ③ 数据目录受管目录已有 → 复用（历史兼容）；
+//! ④ Adoptium 官方渠道下载 zip 免安装包（镜像优先，决议 D24）。
+//! Windows 安装根为 `C:\Program Files\Java\<版本>\`——普通权限写不进时
+//! 经 PowerShell 提权一次（UAC），拒绝/失败回退数据目录受管目录并留痕；
+//! 只写该子目录，不改注册表、不改系统 PATH。其余平台只写数据目录受管位置。
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +29,8 @@ pub enum JavaError {
     Upstream(#[from] UpstreamError),
     #[error("解压 JRE 包失败：{0}")]
     Unzip(String),
+    #[error("JRE 安装失败：{0}")]
+    Install(String),
     #[error("JRE 解压后找不到 java 可执行文件")]
     JavaBinaryNotFound,
 }
@@ -93,6 +99,57 @@ async fn probe_system_java() -> Result<Option<(String, String, u8)>, JavaError> 
 /// 受管目录布局：`<data>/runtime/jdk-<major>/<release_name>/`。
 fn managed_root(data_dir: &Path, major: u8) -> PathBuf {
     data_dir.join("runtime").join(format!("jdk-{major}"))
+}
+
+/// Windows 受管 JRE 统一安装根（决议 D21，用户硬性要求）：
+/// `C:\Program Files\Java\`，与官方安装器默认位置一致。
+fn program_files_java_root() -> PathBuf {
+    PathBuf::from(r"C:\Program Files\Java")
+}
+
+/// 列出安装根下的 java 可执行文件候选：根即版本目录（root/bin/java）
+/// 与一级子目录（root/<版本>/bin/java）两种形态都识别。
+fn java_candidates_in_root(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let direct = root.join(java_bin_relative());
+    if direct.is_file() {
+        out.push(direct);
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let candidate = entry.path().join(java_bin_relative());
+        if candidate.is_file() {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+/// 运行 java -version 并解析主版本；无法运行或解析失败返回 None。
+async fn java_major_of(java: &Path) -> Option<u8> {
+    let output = tokio::process::Command::new(java)
+        .arg("-version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `java -version` 把版本信息打到 stderr
+    parse_java_major(&String::from_utf8_lossy(&output.stderr))
+}
+
+/// 扫描安装根：候选逐一以 `java -version` 核实主版本（目录名不作依据），
+/// 返回首个匹配的绝对路径（决议 D21 的 ② 复用查找）。
+async fn find_java_in_root(root: &Path, major: u8) -> Option<PathBuf> {
+    for candidate in java_candidates_in_root(root) {
+        if java_major_of(&candidate).await == Some(major) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// 在受管目录里找可复用的 java：返回 (java 可执行绝对路径, 版本目录名)。
@@ -169,7 +226,31 @@ pub async fn resolve_java(
         Err(e) => tracing::warn!("系统 Java 探测失败（忽略并转受管安装）：{e}"),
     }
 
-    // ② 受管目录复用
+    // ② Windows：扫描统一安装根 Program Files\Java（决议 D21）
+    if cfg!(windows) {
+        let root = program_files_java_root();
+        match find_java_in_root(&root, required_major).await {
+            Some(path) => {
+                return Ok(JavaRuntime::Managed {
+                    path: path.to_string_lossy().to_string(),
+                    vendor: VENDOR.into(),
+                    version: dir_name_of(&path),
+                });
+            }
+            None => bus.publish(ProgressEvent::StepProgress {
+                task_id: task_id.into(),
+                step: step.into(),
+                current: 0,
+                total: None,
+                detail: Some(format!(
+                    "{} 下未发现 Java {required_major}，转受管安装",
+                    root.display()
+                )),
+            }),
+        }
+    }
+
+    // ③ 受管目录复用（历史兼容：数据目录 runtime/）
     if let Some((path, dir_name)) = find_managed_java(data_dir, required_major) {
         return Ok(JavaRuntime::Managed {
             path: path.to_string_lossy().to_string(),
@@ -178,7 +259,7 @@ pub async fn resolve_java(
         });
     }
 
-    // ③ Adoptium 下载安装（zip 免安装包，sha256 强制校验）
+    // ④ Adoptium 下载安装（zip 免安装包，sha256 强制校验）
     bus.publish(ProgressEvent::StepProgress {
         task_id: task_id.into(),
         step: step.into(),
@@ -270,24 +351,136 @@ pub async fn resolve_java(
         step: step.into(),
         current: 0,
         total: None,
-        detail: Some("校验通过，解压到受管目录".into()),
+        detail: Some("校验通过，安装到目标位置".into()),
     });
-    let dest_root = managed_root(data_dir, required_major);
-    let dest_dir = dest_root.join(&asset.release_name);
-    // Windows 分发 zip 包；Linux/macOS 分发 tar.gz（Adoptium 官方打包形态）
-    if asset.file_name.ends_with(".zip") {
-        unzip(&zip_path, &dest_dir)?;
-    } else {
-        untar_gz(&zip_path, &dest_dir)?;
+    // 安装落位（决议 D21）：Windows 优先统一安装根 `C:\Program Files\Java\`，
+    // 普通权限写不进时 UAC 提权一次；被拒/失败回退数据目录受管目录并留痕。
+    // 其余平台直接装数据目录受管目录。
+    let mut java_path: Option<PathBuf> = None;
+    if cfg!(windows) {
+        let root = program_files_java_root();
+        match install_windows_zip(&zip_path, &root, required_major).await {
+            Ok(path) => java_path = Some(path),
+            Err(e) => {
+                tracing::warn!("Program Files 安装未完成，回退数据目录受管安装：{e}");
+                bus.publish(ProgressEvent::StepProgress {
+                    task_id: task_id.into(),
+                    step: step.into(),
+                    current: 0,
+                    total: None,
+                    detail: Some(format!(
+                        "Program Files 写入未完成（{e}），回退数据目录受管安装"
+                    )),
+                });
+            }
+        }
+    }
+    if java_path.is_none() {
+        let dest_root = managed_root(data_dir, required_major);
+        let dest_dir = dest_root.join(&asset.release_name);
+        // Windows 分发 zip 包；Linux/macOS 分发 tar.gz（Adoptium 官方打包形态）
+        if asset.file_name.ends_with(".zip") {
+            unzip(&zip_path, &dest_dir)?;
+        } else {
+            untar_gz(&zip_path, &dest_dir)?;
+        }
+        java_path = Some(locate_java_binary(&dest_dir).ok_or(JavaError::JavaBinaryNotFound)?);
     }
     let _ = tokio::fs::remove_file(&zip_path).await; // 清理临时 zip，失败不影响结果
 
-    let java_path = locate_java_binary(&dest_dir).ok_or(JavaError::JavaBinaryNotFound)?;
+    let java_path = java_path.ok_or(JavaError::JavaBinaryNotFound)?;
     Ok(JavaRuntime::Managed {
         path: java_path.to_string_lossy().to_string(),
         vendor: VENDOR.into(),
-        version: asset.release_name.clone(),
+        version: dir_name_of(&java_path),
     })
+}
+
+/// 从 java 绝对路径反推版本目录名（`.../<版本>/bin/java` 的 `<版本>` 段）。
+/// 目录名不作假设——Program Files 与受管目录的实际落位名以解压结果为准。
+fn dir_name_of(java_path: &Path) -> String {
+    java_path
+        .parent()
+        .and_then(|bin| bin.parent())
+        .and_then(|dir| dir.file_name())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Windows 安装：zip 解压到统一安装根（决议 D21）。
+/// 直接写入失败（普通权限进程写 Program Files）→ UAC 提权一次；
+/// 成功后在根目录按主版本定位 java 绝对路径返回。
+async fn install_windows_zip(
+    zip_path: &Path,
+    root: &Path,
+    required_major: u8,
+) -> Result<PathBuf, JavaError> {
+    if let Err(e) = unzip(zip_path, root) {
+        tracing::warn!(
+            "直接写入 {} 失败（{e}），弹 UAC 提权安装（用户拒绝则回退数据目录）",
+            root.display()
+        );
+        elevate_expand_archive(zip_path, root).await?;
+    }
+    find_java_in_root(root, required_major)
+        .await
+        .ok_or(JavaError::JavaBinaryNotFound)
+}
+
+/// 生成提权解压脚本（决议 D21）。独立纯函数便于单测。
+/// 退出码约定：0 成功；3 解压后根下找不到 java.exe；4 解压异常。
+fn expand_archive_script(zip_path: &Path, root: &Path) -> String {
+    let zip_str = zip_path.display().to_string();
+    let root_str = root.display().to_string();
+    let lines = [
+        "$ErrorActionPreference = 'Stop'".to_string(),
+        format!("New-Item -ItemType Directory -Force -Path '{root_str}' | Out-Null"),
+        "try {".to_string(),
+        format!("  Expand-Archive -LiteralPath '{zip_str}' -DestinationPath '{root_str}' -Force"),
+        format!(
+            "  $java = Get-ChildItem -LiteralPath '{root_str}' -Recurse -Filter 'java.exe' | Select-Object -First 1"
+        ),
+        "  if ($null -eq $java) { exit 3 }".to_string(),
+        "  exit 0".to_string(),
+        "} catch {".to_string(),
+        "  exit 4".to_string(),
+        "}".to_string(),
+    ];
+    // UTF-8 with BOM：Windows PowerShell 5.1 对无 BOM 文件按 GBK 误读（§8.7 同款约束）
+    format!("\u{feff}{}\n", lines.join("\n"))
+}
+
+/// 经 UAC 提权把 JRE zip 解压到安装根（决议 D21）。
+/// 实现：临时 .ps1 → 外层 powershell 以 `Start-Process -Verb RunAs` 拉起
+/// 内层执行并透传退出码；UAC 被拒时外层抛异常、以非零退出码返回。
+async fn elevate_expand_archive(zip_path: &Path, root: &Path) -> Result<(), JavaError> {
+    let script_path = std::env::temp_dir().join("mcha-jre-install.ps1");
+    std::fs::write(&script_path, expand_archive_script(zip_path, root))
+        .map_err(|e| JavaError::Install(format!("写提权脚本失败：{e}")))?;
+    let outer = format!(
+        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru \
+         -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{}'; exit $p.ExitCode",
+        script_path.display()
+    );
+    let out = tokio::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &outer,
+        ])
+        .output()
+        .await
+        .map_err(|e| JavaError::Install(format!("无法启动 PowerShell 提权流程：{e}")))?;
+    let _ = std::fs::remove_file(&script_path);
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(JavaError::Install(format!(
+        "提权安装未完成（退出码 {:?}；UAC 被拒或脚本执行失败）",
+        out.status.code()
+    )))
 }
 
 /// 在解压目录里定位 java 可执行文件：官方压缩包均带顶层版本目录
@@ -378,9 +571,9 @@ mod integration {
     #[tokio::test]
     #[ignore = "真实下载受管 JRE（约 50MB 网络流量）：cargo test -- --ignored"]
     async fn 受管_java_供给全链路() {
-        // 模拟国内网络：配置清华 TUNA 镜像（官方 GitHub 渠道不可达时的默认解法）
-        let mut cfg = crate::config::AppConfig::default();
-        cfg.network.adoptium_mirror = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium".to_string();
+        // 决议 D24：adoptium_mirror 默认即清华 TUNA 镜像（国内开箱即用），
+        // 本用例同时验证默认镜像渠道与官方回退路径的同一 sha256 校验。
+        let cfg = crate::config::AppConfig::default();
         let data = tempfile::tempdir().unwrap();
         let base = HttpBase::new(&cfg).unwrap();
         let bus = crate::events::EventBus::new();
@@ -433,6 +626,61 @@ mod tests {
         let (path, name) = find_managed_java(tmp.path(), 21).unwrap();
         assert_eq!(name, "b-release");
         assert!(path.ends_with("b-release-jre/bin/java"));
+    }
+
+    /// 决议 D21：统一安装根扫描——根即版本目录与一级版本子目录两种形态
+    /// 都要产出候选（主版本核实由 java -version 运行时完成，不入单测）。
+    #[test]
+    fn 安装根候选扫描_两种形态() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Java");
+        let bin_rel = Path::new(java_bin_relative());
+
+        // 形态一：根即版本目录（root/bin/java[.exe]）
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join(bin_rel), b"").unwrap();
+        let cands = java_candidates_in_root(&root);
+        assert_eq!(cands.len(), 1);
+
+        // 形态二：一级版本子目录（root/<版本>/bin/java[.exe]）
+        let sub = root.join("jdk-25.0.1+12-jre");
+        std::fs::create_dir_all(sub.join("bin")).unwrap();
+        std::fs::write(sub.join(bin_rel), b"").unwrap();
+        let cands = java_candidates_in_root(&root);
+        assert_eq!(cands.len(), 2);
+        assert!(
+            cands
+                .iter()
+                .any(|p| p.to_string_lossy().contains("jdk-25.0.1+12-jre"))
+        );
+
+        // 空目录 / 不存在目录不报错
+        assert!(java_candidates_in_root(&tmp.path().join("absent")).is_empty());
+    }
+
+    /// 决议 D21：提权脚本必须是 UTF-8 with BOM（Windows PowerShell 5.1
+    /// 对无 BOM 文件按 GBK 误读），且包含路径与退出码约定。
+    #[test]
+    fn 提权脚本内容_BOM路径与退出码() {
+        let script = expand_archive_script(
+            Path::new(r"C:\Users\a\AppData\Local\Temp\mcha-jre\jre.zip"),
+            Path::new(r"C:\Program Files\Java"),
+        );
+        assert!(script.starts_with('\u{feff}'), "必须带 UTF-8 BOM");
+        assert!(script.contains(r"C:\Users\a\AppData\Local\Temp\mcha-jre\jre.zip"));
+        assert!(script.contains(r"C:\Program Files\Java"));
+        assert!(script.contains("Expand-Archive"));
+        assert!(script.contains("exit 3"), "解压后无 java.exe 的失败码");
+        assert!(script.contains("exit 4"), "解压异常的失败码");
+    }
+
+    #[test]
+    fn 版本目录名反推() {
+        assert_eq!(
+            dir_name_of(Path::new("/x/jdk-25.0.1+12-jre/bin/java")),
+            "jdk-25.0.1+12-jre"
+        );
+        assert_eq!(dir_name_of(Path::new("java")), "");
     }
 
     #[test]

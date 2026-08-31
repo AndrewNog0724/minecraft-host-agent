@@ -72,6 +72,9 @@ pub enum ServerSoftware {
     Vanilla,
     /// Paper 插件服；build 为 None 表示最新稳定构建
     Paper { build: Option<u32> },
+    /// Spigot 插件服（决议 D22）：Bukkit 生态原汁原味；官方无直链，
+    /// 下载走 getbukkit 镜像渠道。用户点名 spigot 时必须用它，不得改判 Paper
+    Spigot,
     /// Fabric mod 服：loader 与 installer 版本均经 Fabric meta 校验
     Fabric {
         loader_version: String,
@@ -93,7 +96,8 @@ pub struct JavaPlan {
 pub enum JavaRuntime {
     /// 系统 PATH 中探测到并校验可用
     System { path: String, version: String },
-    /// 受管安装：<数据目录>/runtime/jdk-<major>/<版本>/
+    /// 受管安装：Windows 为 `C:\Program Files\Java\<版本>\`（决议 D21），
+    /// 其余平台为 `<数据目录>/runtime/jdk-<major>/<版本>/`
     Managed {
         path: String,
         vendor: String,

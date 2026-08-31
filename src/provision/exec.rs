@@ -11,6 +11,7 @@ use crate::events::{EventBus, ProgressEvent, TaskId, TraceEvent, TraceKind, Trac
 use crate::knowledge::KnowledgeBase;
 use crate::knowledge::upstream::{
     DownloadItem, DownloadKind, FabricClient, HttpBase, ModrinthClient, MojangClient, PaperClient,
+    SpigotClient,
 };
 use crate::spec::{AccountPolicy, NetworkPlan, ServerSoftware, ServerSpec};
 
@@ -256,9 +257,9 @@ async fn deploy_inner(
         );
     }
 
-    // 配置生成（eula / server.properties / 启动参数）
+    // 配置生成（eula / server.properties / 启动脚本 / whitelist.json）
     step_begin(ctx, task_id, "config", "生成配置", track);
-    write_configs(spec, &server_dir)?;
+    write_configs(spec, &server_dir, &jar_path)?;
     step_done(ctx, task_id, true, None, track);
 
     // 启动 + 就绪检测（决议 D19：超时可配置、日志落盘并直显、等待可感知）
@@ -397,13 +398,17 @@ async fn preflight(
     Ok(())
 }
 
-/// 按服务端类型从官方 API 产出主 jar 下载项；Fabric 顺带回填 loader 版本。
+/// 按服务端类型从官方 API / 约定镜像产出主 jar 下载项；Fabric 顺带回填 loader 版本。
 async fn server_jar_item(
     spec: &mut ServerSpec,
     ctx: &DeployContext,
 ) -> Result<DownloadItem, DeployError> {
     match spec.software.clone() {
         ServerSoftware::Vanilla => Ok(MojangClient::new(ctx.http.clone())
+            .server_jar(&spec.mc_version)
+            .await?),
+        // 决议 D22：用户点名 spigot 就用 spigot（getbukkit 镜像渠道）
+        ServerSoftware::Spigot => Ok(SpigotClient::new(ctx.http.clone())
             .server_jar(&spec.mc_version)
             .await?),
         ServerSoftware::Paper { .. } => Ok(PaperClient::new(ctx.http.clone())
@@ -472,8 +477,9 @@ async fn resolve_all_mods(
     Ok(crate::knowledge::flatten_mods(&resolved))
 }
 
-/// 写 eula.txt / server.properties / whitelist.json（FR-04；决策树节点落配置）。
-fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError> {
+/// 写 eula.txt / server.properties / 启动脚本 / whitelist.json
+/// （FR-04 + 决议 D23；决策树节点落配置）。
+fn write_configs(spec: &ServerSpec, server_dir: &Path, jar_path: &Path) -> Result<(), DeployError> {
     std::fs::create_dir_all(server_dir)
         .map_err(|e| DeployError::Io(format!("创建服务端目录：{e}")))?;
 
@@ -509,6 +515,34 @@ fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError
     std::fs::write(server_dir.join("server.properties"), props)
         .map_err(|e| DeployError::Io(format!("写 server.properties：{e}")))?;
 
+    // 启动脚本落盘（决议 D23）：与 mcha 托管启动完全同参数，
+    // 用户以后可双击脚本自行开服，不依赖 mcha 在场
+    if let Some(java_path) = super::java::managed_java_path(&spec.java.runtime) {
+        let jar_name = jar_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let script = start_script_content(
+            cfg!(windows),
+            &java_path,
+            &jar_name,
+            spec.jvm_memory_mb,
+            &spec.spec_id,
+        );
+        let script_path = if cfg!(windows) {
+            server_dir.join("start.bat")
+        } else {
+            server_dir.join("start.sh")
+        };
+        std::fs::write(&script_path, script)
+            .map_err(|e| DeployError::Io(format!("写启动脚本：{e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
     if !whitelist.is_empty() {
         // whitelist.json 每行一个对象（Minecraft 接受 JSON 数组）
         let entries: Vec<String> = whitelist
@@ -535,6 +569,40 @@ fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError
         .map_err(|e| DeployError::Io(format!("写 connection-hint.txt：{e}")))?;
     }
     Ok(())
+}
+
+/// 生成启动脚本内容（决议 D23）。`windows` 显式入参便于双形态单测：
+/// Windows 产 start.bat（CRLF、`cd /d %~dp0`、java 绝对路径含空格必须加引号）；
+/// 其余平台产 start.sh。
+fn start_script_content(
+    windows: bool,
+    java_path: &str,
+    jar_name: &str,
+    mem_mb: u32,
+    spec_id: &str,
+) -> String {
+    let xms = mem_mb / 2;
+    if windows {
+        format!(
+            "@echo off\r\n\
+             title MCHA - {spec_id}\r\n\
+             cd /d %~dp0\r\n\
+             \"{java}\" -Xms{xms}M -Xmx{mem}M -jar {jar} nogui\r\n\
+             pause\r\n",
+            java = java_path,
+            jar = jar_name,
+            mem = mem_mb,
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             cd \"$(dirname \"$0\")\"\n\
+             exec \"{java}\" -Xms{xms}M -Xmx{mem}M -jar {jar} nogui\n",
+            java = java_path,
+            jar = jar_name,
+            mem = mem_mb,
+        )
+    }
 }
 
 /// 连接说明（FR-07）。
@@ -600,6 +668,53 @@ fn step_done(
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 决议 D23：start.bat 形态——java 绝对路径含空格必须加引号，
+    /// 内存与 jar 参数与托管启动一致，CRLF 行尾。
+    #[test]
+    fn 启动脚本_bat形态() {
+        let s = start_script_content(
+            true,
+            r"C:\Program Files\Java\jdk-25.0.1+12-jre\bin\java.exe",
+            "spigot-26.2.jar",
+            2048,
+            "e2e-spigot",
+        );
+        assert!(s.contains("cd /d %~dp0"));
+        assert!(
+            s.contains(r#""C:\Program Files\Java\jdk-25.0.1+12-jre\bin\java.exe""#),
+            "含空格路径必须加引号：{s}"
+        );
+        assert!(s.contains("-Xms1024M -Xmx2048M -jar spigot-26.2.jar nogui"));
+        assert!(s.ends_with("pause\r\n"));
+        // 每个 \n 都必须是 \r\n（bat 规范）
+        assert_eq!(
+            s.matches('\n').count(),
+            s.matches("\r\n").count(),
+            "bat 必须 CRLF 行尾"
+        );
+    }
+
+    /// 决议 D23：start.sh 形态——可执行脚本，exec 承接，LF 行尾。
+    #[test]
+    fn 启动脚本_sh形态() {
+        let s = start_script_content(
+            false,
+            "/opt/java/jdk-25/bin/java",
+            "spigot-26.2.jar",
+            4096,
+            "e2e-spigot",
+        );
+        assert!(s.starts_with("#!/bin/sh\n"));
+        assert!(s.contains("cd \"$(dirname \"$0\")\""));
+        assert!(s.contains("-Xms2048M -Xmx4096M -jar spigot-26.2.jar nogui"));
+        assert!(!s.contains('\r'), "sh 必须 LF 行尾");
+    }
+}
+
+#[cfg(test)]
 mod integration {
     use super::*;
     use crate::spec::{AccountPolicy, WorldPlan};
@@ -634,6 +749,63 @@ mod integration {
 
         // 就绪后连接说明非空，然后干净停止（Drop 守卫也应生效）
         assert!(!result.connection.lines.is_empty());
+        result.server.stop();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    /// Spigot 一次跑通验收（v0.11，用户场景：spigot + 26.2，本机 127.0.0.1
+    /// 进服）：预检 → Java 25 供给（Program Files\Java 或受管目录）→
+    /// getbukkit 镜像下载 → 配置 + start.bat → 启动 → 就绪后本机 TCP 连通
+    /// 127.0.0.1:25565 → 干净停止。需联网，在实机运行：
+    /// `cargo test -- --ignored 端到端_spigot`
+    #[tokio::test]
+    #[ignore = "真实端到端（下载约 50MB 流量，26.2 首次生成世界较慢）：cargo test -- --ignored"]
+    async fn 端到端_spigot服务器部署() {
+        // D24：adoptium_mirror 默认即 TUNA 镜像，这里不再手工配置，
+        // 顺带验证"默认镜像开箱即用"
+        let cfg = crate::config::AppConfig::default();
+        let kb = crate::knowledge::KnowledgeBase::embedded().unwrap();
+        let bus = crate::events::EventBus::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ctx = DeployContext::new(cfg, kb, bus, cancel).unwrap();
+
+        let mut spec = ServerSpec::new("e2e-spigot");
+        spec.mc_version = "26.2".into();
+        spec.software = ServerSoftware::Spigot;
+        spec.account = AccountPolicy::Online;
+        spec.network = NetworkPlan::LanOnly;
+        spec.world = WorldPlan::New { seed: None };
+        spec.port = 25565;
+        spec.max_players = 5;
+        spec.jvm_memory_mb = 2048;
+
+        let task_id = "t-e2e-spigot".to_string();
+        let result = deploy(&mut spec, &ctx, &task_id)
+            .await
+            .unwrap_or_else(|e| panic!("部署失败：{e}"));
+
+        // 验收核心：就绪后本机必须能建立 TCP 连接（进服前的连通性底线）
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", spec.port))
+            .await
+            .unwrap_or_else(|e| panic!("127.0.0.1:{} 连接失败：{e}", spec.port));
+        drop(stream);
+
+        // start.bat（Windows）/start.sh 必须已落盘且引用下载到的 jar
+        let script = if cfg!(windows) {
+            std::fs::read_to_string(
+                std::path::Path::new(&spec.server_dir.clone().unwrap()).join("start.bat"),
+            )
+        } else {
+            std::fs::read_to_string(
+                std::path::Path::new(&spec.server_dir.clone().unwrap()).join("start.sh"),
+            )
+        }
+        .unwrap_or_else(|e| panic!("启动脚本未落盘：{e}"));
+        assert!(
+            script.contains("nogui"),
+            "启动脚本应含完整启动命令：{script}"
+        );
+
         result.server.stop();
         tokio::time::sleep(Duration::from_secs(2)).await;
     }

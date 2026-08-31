@@ -65,7 +65,7 @@ pub struct DownloadItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadKind {
-    /// 服务端主 jar（原版 / Paper / Fabric bundle）
+    /// 服务端主 jar（原版 / Paper / Spigot / Fabric bundle）
     ServerJar,
     /// 受管 JRE zip（§8.8）
     JavaJre,
@@ -415,6 +415,77 @@ impl PaperClient {
             sha1: None,
             sha256: dl["checksums"]["sha256"].as_str().map(String::from),
             file_name,
+            kind: DownloadKind::ServerJar,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// getbukkit 镜像：Spigot 服务端（决议 D22）
+// ---------------------------------------------------------------------------
+
+/// Spigot 客户端：官方（SpigotMC）仅以 BuildTools 编译分发、无直链，
+/// 下载走 getbukkit 第三方镜像（§11 已注明取舍与哈希口径）。
+pub struct SpigotClient {
+    base: HttpBase,
+}
+
+impl SpigotClient {
+    pub const API: &str = "https://api.getbukkit.org/v2/download/spigot";
+    pub const DOWNLOAD_ROOT: &str = "https://download.getbukkit.org/spigot";
+
+    pub fn new(base: HttpBase) -> Self {
+        Self { base }
+    }
+
+    /// 指定 MC 版本的 Spigot 服务端下载项。
+    /// 渠道① getbukkit v2 API：返回直链，哈希可得即携带（有则强制校验）；
+    /// 渠道② 直链模式回退：API 不可达时按命名规则拼 URL（无哈希，
+    /// 来源会在部署轨迹中明示"第三方镜像"）。
+    pub async fn server_jar(&self, mc_version: &str) -> Result<DownloadItem, UpstreamError> {
+        let api_url = format!("{}/{mc_version}", Self::API);
+        match self.base.get_json(&api_url).await {
+            Ok(json) => {
+                // v2 形态：单版本请求返回对象 {name, version, url, ...}；
+                // 防御清单式响应（数组时按 version 字段定位条目）
+                let entry = if json.is_array() {
+                    json.as_array()
+                        .and_then(|a| a.iter().find(|e| e["version"].as_str() == Some(mc_version)))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                } else {
+                    json
+                };
+                let url = entry["url"].as_str().unwrap_or_default().to_string();
+                if url.is_empty() {
+                    tracing::warn!("getbukkit API 响应缺少 url 字段，回退直链模式");
+                } else {
+                    let sha256 = entry["sha256"]
+                        .as_str()
+                        .or_else(|| entry["checksum"].as_str())
+                        .map(String::from);
+                    return Ok(DownloadItem {
+                        url,
+                        sha1: None,
+                        sha256,
+                        file_name: format!("spigot-{mc_version}.jar"),
+                        kind: DownloadKind::ServerJar,
+                    });
+                }
+            }
+            // 镜像明确没有该版本：语义化报错，不做无谓的直链尝试
+            Err(UpstreamError::Status { status: 404, .. }) => {
+                return Err(UpstreamError::BadResponse(format!(
+                    "Spigot {mc_version} 在 getbukkit 镜像上无可用构建（该版本可能尚未发布或未被收录）"
+                )));
+            }
+            Err(e) => tracing::warn!("getbukkit API 查询失败（{api_url}），回退直链模式：{e}"),
+        }
+        Ok(DownloadItem {
+            url: format!("{}/spigot-{mc_version}.jar", Self::DOWNLOAD_ROOT),
+            sha1: None,
+            sha256: None,
+            file_name: format!("spigot-{mc_version}.jar"),
             kind: DownloadKind::ServerJar,
         })
     }
@@ -869,6 +940,24 @@ mod tests {
         let asset = client.latest_jre(21).await.unwrap();
         assert!(asset.download_url.starts_with("https://"));
         assert!(asset.sha256.is_some(), "Adoptium 元数据必须带 sha256");
+    }
+
+    #[tokio::test]
+    #[ignore = "真实上游连通性冒烟（计网络流量）：cargo test -- --ignored"]
+    async fn 冒烟_spigot镜像直链() {
+        // 决议 D22：Spigot 走 getbukkit 镜像；API 可用时应返回直链
+        let client = SpigotClient::new(base());
+        let item = client.server_jar("1.21.1").await.unwrap();
+        assert!(
+            item.url.starts_with("https://"),
+            "直链应为 HTTPS：{}",
+            item.url
+        );
+        assert_eq!(item.file_name, "spigot-1.21.1.jar");
+        assert!(
+            item.sha256.is_none_or(|h| !h.is_empty()),
+            "哈希字段若返回必须非空"
+        );
     }
 
     #[tokio::test]

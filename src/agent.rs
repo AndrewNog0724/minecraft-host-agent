@@ -155,7 +155,7 @@ impl<'a> RequirementAgent<'a> {
                     "required": ["mc_version"],
                     "properties": {
                         "mc_version": {"type": "string", "description": "MC 版本号，如 1.21.1"},
-                        "software": {"type": "string", "description": "可选：vanilla/paper/fabric"}
+                        "software": {"type": "string", "description": "可选：vanilla/spigot/paper/fabric。玩家点名 spigot 必须原样填 spigot，不得改成 paper"}
                     }
                 }),
             ),

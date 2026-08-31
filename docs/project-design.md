@@ -251,7 +251,7 @@ struct ServerSpec {
     spec_id: String,             // 语义化 id（如 "twilight-5p"）
     created_at: DateTime,
     account: AccountPolicy,      // Online | Offline{whitelist} | Hybrid{auth: Plugin|EasyAuth}
-    software: ServerSoftware,    // Vanilla | Paper{build} | Fabric{loader_ver, installer_ver}
+    software: ServerSoftware,    // Vanilla | Paper{build} | Spigot | Fabric{loader_ver, installer_ver}（v0.11 D22）
     mc_version: String,          // 语义化版本，经 knowledge 校验存在
     java: JavaPlan,              // 见 §8.8
     jvm_memory_mb: u32,          // 决策树按玩家数与机器内存推导
@@ -332,6 +332,7 @@ struct TaskTrace {
   4. **就绪等待可感知**：等待期间周期性上报 `已等待 N/上限 秒`（进度条位置即剩余预算）；超时上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；
   5. **失败留痕三件套**：`TaskFinished` 事件携带 error 摘要 → `events.jsonl` 与 `TaskTrace.error` 落盘 → `mcha sessions show` 与会话导出可见；不再只有 LLM 对话可查。
 - 进程管理：`tokio::process` 起服务端，stdout/stderr 行流解析就绪标记；进程句柄 Drop 守卫——取消时先停服务端再退出（R4 打断语义，不留孤儿进程）。
+- **启动脚本落盘（决议 D23，v0.11）**：配置生成步骤同时写 `start.bat`（Windows）/ `start.sh`（其它平台）到服务端目录——绝对路径 java（含空格加引号）+ `-Xms/-Xmx` + `-jar <jar 文件名> nogui`。mcha 托管运行与脚本自启完全同参数，用户以后可双击脚本自行开服，不依赖 mcha 在场。
 
 ### 8.6 tunnel：内网穿透编排（默认樱花frp，P1）与 diagnose（P1）
 
@@ -420,15 +421,16 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 | 设计项 | 决策 | 理由 |
 | --- | --- | --- |
 | 发行版 | Eclipse Temurin（Adoptium） | 开源（GPL+CE）、免费无授权问题、MC 社区事实标准（Paper 文档推荐） |
-| 包类型 | **zip 免安装包**，不用 msi/exe 安装器 | 免管理员权限、不写注册表、不改系统 PATH；删除目录即卸载，天然可回滚 |
+| 包类型 | **zip 免安装包**，不用 msi/exe 安装器 | 免安装器写注册表；删除目录即卸载，天然可回滚 |
 | 镜像类型 | 默认 **JRE**（P2 若引入需 JDK 的工具再切 JDK 包） | 服务端只需 JRE；包体约为 JDK 一半，玩家下载快 |
-| 安装路径 | `<数据目录>/runtime/jdk-<major>/<完整版本号>/`（受管目录） | 自包含、多版本可共存、绝不碰系统位置 |
-| 选择顺序 | ① 系统 PATH 已有匹配版本 → 用系统的；② 受管目录已有 → 复用；③ 下载安装（v0.10.1 勘误：Adoptium 压缩包自带顶层目录，解压后实为 `<release>/<release>-jre/bin/java` 双层嵌套，复用查找只查一层导致**每个任务都重复下载**——查找改为两层探测；每次任务仍先走 ①②，"不缺就不装"） | 尊重玩家已有环境；重复开服零下载 |
-| API | Adoptium v3：`GET /v3/assets/latest/{major}/ga?os=...&arch=...&image_type=jre` 取元数据（含 sha256）→ 下载 zip | 元数据与二进制同源，校验值可信 |
+| 安装路径 | **Windows：`C:\Program Files\Java\<完整版本号>\bin\java.exe`（决议 D21，v0.11 修订：用户硬性要求统一位置）；Linux/macOS：`<数据目录>/runtime/jdk-<major>/<完整版本号>/`（受管目录）** | Windows 侧对齐玩家对"Java 装在哪"的普遍认知（官方安装器同位置）；其余平台保持自包含受管目录 |
+| Windows 写入策略 | 目标根不可写（普通权限进程写 Program Files 必然失败）时经 PowerShell `Start-Process -Verb RunAs` 提权完成落盘（弹**一次** UAC，用户点"是"即安装）；提权被拒或失败 → 回退数据目录受管目录并在轨迹/档案 notes 留痕。**边界：只写 `Program Files\Java` 子目录，不改注册表、不改系统 PATH、不装 msi** | 标准安装器同款交互；拒绝提权时降级不失败 |
+| 选择顺序 | ① 系统 PATH 已有匹配版本 → 用系统的；② Windows 扫描 `C:\Program Files\Java\*\bin\java.exe` 主版本匹配 → 复用（**v0.11 D21**）；③ 受管目录（数据目录 runtime/）已有 → 复用（历史兼容）；④ 下载安装（v0.10.1 勘误：Adoptium 压缩包自带顶层目录，解压后实为 `<release>/<release>-jre/bin/java` 双层嵌套，复用查找只查一层导致**每个任务都重复下载**——查找改为两层探测；每次任务仍先走 ①②③，"不缺就不装"） | 尊重玩家已有环境；重复开服零下载 |
+| API | Adoptium v3：`GET /v3/assets/feature_releases/{major}/ga?os=...&arch=...&image_type=jre&page_size=1` 取元数据（含 sha256，§14.1 勘误后形态）→ 下载 zip | 元数据与二进制同源，校验值可信 |
 | 架构适配 | `std::env::consts::ARCH`（x86_64 / aarch64）+ OS 探测 | Windows on ARM 等场景自动选对包 |
 | 校验 | sha256 强制校验后解压；失败删除重试一次再报错 | 与服务端 / mod 下载同一套安全管线 |
 | 解压 | `zip` crate 纯 Rust 解压到受管目录 | 无外部依赖 |
-| 网络要求 | 网络 | 走全局代理 / 镜像机制（国内默认镜像：清华 TUNA Adoptium 镜像） | 同 Q3 网络问题的统一解法 |
+| 网络要求 | 网络 | 走全局代理 / 镜像机制（**v0.11 D24：`adoptium_mirror` 默认值即清华 TUNA 镜像**，国内开箱即用；config 显式置空可关闭；镜像优先、官方 GitHub 渠道回退，同一 sha256 校验） | 同 Q3 网络问题的统一解法 |
 | 需求口径 | Java 版本需求动态化（v0.9）：`required_major` 以 piston-meta 版本 JSON `javaVersion.majorVersion` 为准（`check_version_compat` 工具与部署 preflight 同口径），L1 静态表仅离线兜底——静态外推在版本制式切换时会算错（实测 26.2 需 25 而外推得 21） | 权威事实源，不猜 |
 | 路径解析 | 安装完成后把**绝对路径**写入 `JavaPlan` 并入档案；运行服务端一律用该路径 | 不依赖 PATH，跨会话可复现 |
 | 失败路径 | 下载失败按归因提示（代理 / 镜像建议）；整体失败则任务停在 Java 供给步骤，可续跑 | NFR-3 可恢复 |
@@ -500,10 +502,11 @@ enum JavaRuntime {
 | 数据 | 来源 | 用途 | 备注 |
 | --- | --- | --- | --- |
 | MC 版本清单 / 原版服务端 | Mojang piston-meta API | 版本校验、原版服下载 | 国内可达性：代理 / 镜像 |
+| Spigot 服务端 jar | **getbukkit 镜像**（`api.getbukkit.org/v2/download/spigot/<版本>` 取直链与哈希；回退直链 `download.getbukkit.org/spigot/spigot-<版本>.jar`） | Spigot 服下载（v0.11 D22） | **第三方镜像**：SpigotMC 官方不提供直链（仅 BuildTools 编译分发）。镜像返回哈希则强制校验，拿不到时下载仍走 HTTPS 并在轨迹明示"第三方来源无官方哈希"；BuildTools 本地编译（需 git + JDK）列为手动指引，不自动化 |
 | Paper 构建与下载 | PaperMC API | Paper 服下载 | 同上 |
 | Fabric 版本与安装器 | Fabric meta / maven | Fabric 服搭建 | 同上 |
 | mod 元数据 | Modrinth API v2 | 检索、版本匹配、依赖树、下载 | CurseForge 视需要后补 |
-| JRE/JDK 二进制 | Adoptium v3 API（镜像：清华 TUNA） | Java 自动供给（§8.8） | sha256 校验 |
+| JRE/JDK 二进制 | Adoptium v3 API（镜像：清华 TUNA，**v0.11 起默认启用**） | Java 自动供给（§8.8） | sha256 校验 |
 | 樱花frp API / frpc | `api.natfrp.com/v4`（Bearer 访问密钥）；frpc 经 `GET /system/clients` 官方分发（含哈希） | FR-08 穿透编排（§8.6） | 一次性人工：注册 + 实名 + token；API 定义 AGPL-3.0，引用注明 |
 | LLM | 任意 OpenAI 兼容 Chat API（用户配置） | 需求解析、澄清、诊断兜底 | R3；无 usage 时记次数（课程 Q9） |
 
@@ -518,9 +521,9 @@ enum JavaRuntime {
 
 ## 13. 测试与验收策略
 
-- 单元：决策树节点（输入 → Spec 增量）、版本校验管线（含"26.2"拒绝、依赖闭包）、模式库正则、JVM 参数推导、Java 供给的版本解析与路径规则。
+- 单元：决策树节点（输入 → Spec 增量）、版本校验管线（含"26.2"拒绝、依赖闭包）、模式库正则、JVM 参数推导、Java 供给的版本解析与路径规则、启动脚本内容生成（java 路径含空格引号、内存参数、jar 文件名）。
 - 集成：`LlmClient` trait + Fake 实现（脚本化回复）驱动需求理解环全流程，CI 不花真钱；**SSE 解析形状回归**（决议 D16）：mock 字节流覆盖五种上游形状——增量式分片、累积式分片、分片缺 `index`、usage 块缺 `choices`、`finish_reason=length` 半截参数——逐一断言解析结果或错误文案。
-- 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。
+- 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。**Spigot 一次跑通验收（v0.11）**：`cargo test -- --ignored` 的 spigot e2e——spigot + 26.2 → Java 供给 → 镜像下载 → 配置/start.bat → 启动 → 就绪后本机 TCP 连通 `127.0.0.1:25565` 再停止；Windows 实机跑通即本验收通过。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
 
 ## 14. 仓库组织与实现顺序
@@ -569,7 +572,7 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | # | 决议 | 内容 |
 | --- | --- | --- |
 | D1 | 界面形态 | MVP 用 CLI/TUI；Web（只读状态页）列 P2，09-06 公开展示前评估 |
-| D2 | Java 供给 | **全自动受管安装，不降级**；设计见 §8.8 |
+| D2 | Java 供给 | **全自动受管安装，不降级**；设计见 §8.8。**（v0.11 D21 修订：Windows 安装位置改为 `C:\Program Files\Java\<版本>\`，提权写入、拒绝则回退数据目录——"不碰系统位置"边界收窄为"只写 Program Files\Java 子目录"）** |
 | D3 | 价格表 | 内置常见模型预设随包分发，注明来源与更新日期，用户可覆盖 |
 | D4 | 数据目录 | `~/.mcha/`（Windows：`%APPDATA%\mcha\`；原名 `~/.mc-host-agent/`，D15 定名时统一更名，不迁移旧目录） |
 | D5 | 基岩跨平台 | 不做（边界外未来工作） |
@@ -586,6 +589,10 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | D18 | 工作区交互确认（v0.10 实测反馈：服务器文件静默落入数据目录深处，用户不知装到哪了） | 开服流程（`new` / `plan`）在方案确认环节**交互询问安装目录**，默认值 = **运行 mcha 的当前目录**（已设 `MCHA_WORKSPACE` / config 时显示为默认值并注明来源）；本次输入优先级最高，但不写回 config（逐次确认，显式持久化走 `config wizard`）；`--yes`（演示/CI）跳过询问、采用默认并留痕；Java 仍装受管目录（数据目录 runtime/），只有服务端文件跟随工作区 |
 | D19 | 部署执行可观测性（v0.10 实测反馈：下载完成后终端静默直至超时失败，trace 只有 LLM 步，失败原因与启动日志无处可查） | ① 执行流水线每步发布 Exec 轨迹（补齐 R5）；② 服务端 stderr 与 stdout 并读（防管道写满卡死 + 崩溃原因可见）；③ 启动日志落盘 `<server_dir>/mcha-launch.log`，失败附日志尾部；④ 就绪等待周期上报"已等待 N/上限 秒"，上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；⑤ 失败摘要写入 `events.jsonl` 与 `TaskTrace.error`；⑥ 模型文本直显扩大到伴随工具调用的轮次；⑦ 步骤完成以滚动摘要行留痕（进度条收起）。**（v0.10.1 补充：⑧ Java 供给收尾行显示绝对安装路径；⑨ 服务端下载收尾行显示来源 URL 并入轨迹——实测用户问"Java 装哪了""服务端哪来的"，来源必须显式可见）** |
 | D20 | 账号语义归一化（v0.10.1 实测缺陷：LLM 提供的英文选项如 "All offline (cracked)" 无法命中决策树的精确字符串匹配 `"offline"/"离线"`，**静默落入默认分支 online-mode=true**，离线玩家进服报"无效会话"） | 账号类回答按关键词归一化（hybrid/mixed/混合 > offline/crack/离线/盗版 > online/premium/正版，顺序即优先级——混合选项同时含多个关键词）；归一化失败**不静默默认**：有玩家人数线索按人数推断，仍无法判断则追问，绝不在用户未确认的情况下开启正版验证；方案摘要对验证模式给出后果提示（online：离线启动器会提示"无效会话"） |
+| D21 | Java 安装位置（v0.11，用户硬性要求：统一放 `C:\Program Files\Java\<版本名>\bin\java.exe`） | Windows 受管 JRE 安装根目录改为 `C:\Program Files\Java\`；复用查找顺序 ① PATH → ② `Program Files\Java\*` 扫描主版本 → ③ 数据目录受管目录（历史兼容）；普通权限写入失败时经 PowerShell `Start-Process -Verb RunAs` 提权（一次 UAC），拒绝/失败回退数据目录并留痕。不改注册表、不改 PATH、不装 msi；Linux/macOS 维持数据目录受管安装 |
+| D22 | Spigot 一等公民（v0.11，用户反馈：明确说 spigot 却被安排 Paper） | `ServerSoftware` 新增 `Spigot` 变体；决策树节点 2 / CLI 选项 / agent 工具 schema / L4 提示词全链路加入 spigot，**用户点名 spigot 就用 spigot**，不得改判 Paper；下载走 getbukkit 镜像（API 取直链+哈希 → 直链模式回退），哈希可得即强制校验，不可得则轨迹明示第三方来源；BuildTools 编译列手动指引不自动化。混合认证：Spigot 属 Bukkit 生态 → 登录插件 |
+| D23 | 启动脚本落盘（v0.11，用户反馈：没有 start.bat） | 配置生成步骤写 `start.bat`（Windows）/ `start.sh`：`cd /d %~dp0` + 绝对路径 java（含空格加引号）+ `-Xms/-Xmx` + `-jar <jar 文件名> nogui`；与 mcha 托管启动完全同参数，用户可脱离 mcha 双击自启 |
+| D24 | 镜像默认启用（v0.11，用户反馈：GitHub 下载 Java 困难） | `[network] adoptium_mirror` 默认值 = 清华 TUNA Adoptium 镜像（国内开箱即用）；config 显式置空关闭；下载顺序镜像优先、官方回退，同一 sha256 校验不变 |
 
 ## 16. 里程碑与风险
 
@@ -633,3 +640,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-31 | v0.10 | 执行可观测性与工作区确认（session-backup 实测复盘：下载完成后终端静默 4 分钟至就绪超时失败，trace 只有 LLM 步，stderr 接而不读）。决议 **D18**：开服前交互询问安装目录，默认当前目录（原为数据目录深处）；决议 **D19**：Exec 轨迹补全、stderr 并读防死锁、启动日志落盘 `mcha-launch.log` 并在失败时附尾部、就绪等待计时与 `[deploy] ready_timeout_secs` 配置、失败摘要入 events.jsonl / TaskTrace.error、模型文本直显扩大到工具调用轮次、步骤完成滚动留痕。§5.1/§8.1/§8.5/§8.7/§9 同步更新 |
 | 2026-08-31 | v0.10.1 | Windows 实测三项缺陷修复 + 两处可观测补充：① 受管 JRE 复用失效（双层嵌套）导致每次任务重复下载（§8.8 勘误）；② 账号类回答语义归一化，未识别不再静默默认 online-mode（**"无效会话"根因**，决议 D20）；③ 目录布局拍平为 `<工作区>/<spec_id>/`（D11 修订）；④ Java 收尾行显示安装路径、服务端下载显示来源 URL（D19 ⑧⑨）。§8.8/§15 同步更新 |
 | 2026-08-31 | v0.10.2 | 目录彻底拍平（用户反馈 `mc-6p` 层累赘）：服务端文件直接落在 `<工作区>/`，spec_id 不再参与目录布局（仅档案命名与 motd）；新增目标目录已有服务器文件的确认拦截（交互确认 / `--yes` 拒绝），防止静默混用用户文件（D11 修订）。§8.7 同步更新 |
+| 2026-08-31 | v0.11 | 「Spigot 一次跑通」专项（用户四项反馈：GitHub 下载 Java 困难 / Java 路径不合要求 / 指名 spigot 被安排 Paper / 没有 start.bat）。决议 **D21**：Windows 受管 JRE 统一装 `C:\Program Files\Java\<版本>\`（提权写入 + 回退）；决议 **D22**：`ServerSoftware::Spigot` 一等公民，全链路（决策树/CLI/工具 schema/L4 提示词）加入 spigot，下载走 getbukkit 镜像（§11 数据源补行）；决议 **D23**：配置生成落盘 start.bat/start.sh（§8.5）；决议 **D24**：`adoptium_mirror` 默认清华 TUNA。§8.1/§8.5/§8.8/§11/§13/§15 同步更新 |

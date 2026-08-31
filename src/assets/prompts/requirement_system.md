@@ -30,7 +30,7 @@
 
 ```json
 {
-  "partial": {"mc_version": "26.2", "software": "vanilla", "max_players": 5},
+  "partial": {"mc_version": "26.2", "software": "spigot", "max_players": 5},
   "questions": [
     {"topic": "cross_network", "text": "朋友们和你不在同一个局域网吗？", "options": ["是", "否"]}
   ]
@@ -43,7 +43,9 @@
 2. 把已确认的信息填入 submit_spec 的 partial 字段提交：
    - online_players / offline_players：正版 / 离线玩家数
    - account_kind：online / offline / hybrid（能从人数推断就不必问玩家）
-   - software：vanilla / paper / fabric（玩家要 mod → fabric；要插件 → paper）
+    - software：vanilla / spigot / paper / fabric（玩家要 mod → fabric；
+      玩家点名 spigot → **必须原样填 spigot，绝不改判成 paper**；
+      只泛泛说"要插件"而没点名时才推荐 paper）
    - mc_version：玩家要求的版本（不确定时留空让系统追问）
    - mods：玩家提到的 mod 名（保持玩家原话，系统负责翻译与检索）
    - cross_network：朋友是否跨网络联机

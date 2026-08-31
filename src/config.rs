@@ -124,7 +124,7 @@ impl Default for BudgetConfig {
 }
 
 /// 网络配置：全局代理 + 官方域镜像替换（§12 下载安全：镜像仅替换白名单内域名）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     /// HTTP(S) 代理，如 http://127.0.0.1:7890；空 = 直连
     #[serde(default)]
@@ -132,10 +132,26 @@ pub struct NetworkConfig {
     /// 域名镜像映射：官方域 → 镜像域（如 piston-meta → 国内镜像）
     #[serde(default)]
     pub mirrors: Vec<MirrorRule>,
-    /// Adoptium JRE 下载镜像根地址（§8.8，国内推荐清华 TUNA：
-    /// https://mirrors.tuna.tsinghua.edu.cn/Adoptium）；空 = 仅官方渠道
-    #[serde(default)]
+    /// Adoptium JRE 下载镜像根地址（§8.8，决议 D24：默认清华 TUNA，国内
+    /// 开箱即用；官方 GitHub 渠道经常不可达，镜像优先、官方回退）。
+    /// 海外网络可在 config.toml 显式置空关闭。
+    #[serde(default = "default_adoptium_mirror")]
     pub adoptium_mirror: String,
+}
+
+fn default_adoptium_mirror() -> String {
+    const TUNA_ADOPTIUM: &str = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium";
+    TUNA_ADOPTIUM.to_string()
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            proxy: String::new(),
+            mirrors: Vec::new(),
+            adoptium_mirror: default_adoptium_mirror(),
+        }
+    }
 }
 
 /// 一条镜像规则：把对 `from` 的请求改写到 `to`。
@@ -437,9 +453,10 @@ currency = "CNY"
 # 网络配置：代理与官方域镜像（国内网络不可达时启用）。
 [network]
 proxy = ""
-# Adoptium JRE 下载镜像（§8.8）。国内强烈建议清华 TUNA 镜像（官方 GitHub 渠道
-# 在国内经常不可达）：取消下一行注释即启用。
-# adoptium_mirror = "https://mirrors.tuna.tsinghua.edu.cn/Adoptium"
+# Adoptium JRE 下载镜像（§8.8，决议 D24）。默认已启用清华 TUNA 镜像——
+# 官方 GitHub 下载渠道在国内经常不可达；镜像优先、官方回退，同一 sha256 校验。
+# 海外网络想直连官方渠道时，取消下一行注释（置空）：
+# adoptium_mirror = ""
 # 镜像规则示例：
 # [[network.mirrors]]
 # from = "piston-meta.mojang.com"

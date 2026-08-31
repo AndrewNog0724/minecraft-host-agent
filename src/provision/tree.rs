@@ -45,7 +45,8 @@ pub fn derive_spec(
     // ── 节点 1：账号类型 ─────────────────────────────────────────
     apply_account(&mut spec, draft, answers, &mut questions);
 
-    // ── 节点 2：服务端类型（mod 需求 → Fabric；插件 → Paper）──────
+    // ── 节点 2：服务端类型（mod 需求 → Fabric；点名 spigot → Spigot（D22）；
+    //    其余插件需求 → Paper）──────
     apply_software(&mut spec, draft, answers, &mut questions);
 
     // ── 节点 3：MC 版本（知识库 + 官方清单校验）──────────────────
@@ -286,8 +287,15 @@ fn apply_software(
         }
         None => questions.push(Question {
             topic: "software".into(),
-            text: "服务端类型？(1) 原版 vanilla (2) Paper 插件服 (3) Fabric mod 服".into(),
-            options: vec!["vanilla".into(), "paper".into(), "fabric".into()],
+            text:
+                "服务端类型？(1) 原版 vanilla (2) Spigot 插件服 (3) Paper 插件服 (4) Fabric mod 服"
+                    .into(),
+            options: vec![
+                "vanilla".into(),
+                "spigot".into(),
+                "paper".into(),
+                "fabric".into(),
+            ],
             allow_empty: false,
         }),
     }

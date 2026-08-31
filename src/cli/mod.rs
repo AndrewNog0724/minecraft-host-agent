@@ -387,7 +387,8 @@ fn friendly_options(topic: &str, options: &[String]) -> Vec<String> {
             .iter()
             .map(|o| match o.as_str() {
                 "vanilla" => "vanilla — 原版".to_string(),
-                "paper" => "paper — Paper 插件服".to_string(),
+                "spigot" => "spigot — Spigot 插件服（Bukkit 原生）".to_string(),
+                "paper" => "paper — Paper 插件服（Spigot 优化分支）".to_string(),
                 "fabric" => "fabric — Fabric mod 服".to_string(),
                 other => other.to_string(),
             })
@@ -445,6 +446,7 @@ fn print_spec_summary(spec: &ServerSpec) {
                 "Paper{b}",
                 b = build.map(|x| format!(" 构建{x}")).unwrap_or_default()
             ),
+            crate::spec::ServerSoftware::Spigot => "Spigot（Bukkit 原生）".to_string(),
             crate::spec::ServerSoftware::Fabric { loader_version, .. } =>
                 format!("Fabric（loader {loader_version}）"),
         }
@@ -517,11 +519,16 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
     let sw_idx = tokio::task::block_in_place(|| {
         Select::new()
             .with_prompt("服务端类型")
-            .items(&["vanilla 原版", "paper 插件服", "fabric mod 服"])
+            .items(&[
+                "vanilla 原版",
+                "spigot 插件服",
+                "paper 插件服",
+                "fabric mod 服",
+            ])
             .default(0)
             .interact()
     })?;
-    let software = ["vanilla", "paper", "fabric"][sw_idx].to_string();
+    let software = ["vanilla", "spigot", "paper", "fabric"][sw_idx].to_string();
     let mods_in: String = tokio::task::block_in_place(|| {
         Input::<String>::new()
             .with_prompt("mod（逗号分隔，可中文，留空跳过）")
