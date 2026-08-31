@@ -1,0 +1,40 @@
+{
+  "task_id": "f4a0798d-3adc-4a42-8681-f264e9f7aa7b",
+  "title": "I have 5 friends. We want to play Minecraft Java Edition 26.2. No mods. But I want to use Spigot server.",
+  "spec_id": null,
+  "started_at": "2026-08-31T15:45:21.288900400+08:00",
+  "finished_at": null,
+  "steps": [
+    {
+      "kind": "llm",
+      "summary": "第 1 轮：2 个工具调用，文本 64 字",
+      "usage_refs": [],
+      "at": "2026-08-31T15:45:23.918854300+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    },
+    {
+      "kind": "llm",
+      "summary": "第 2 轮：1 个工具调用，文本 424 字",
+      "usage_refs": [],
+      "at": "2026-08-31T15:45:40.518596700+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "环境复检：✔",
+      "usage_refs": [],
+      "at": "2026-08-31T15:45:53.643999800+08:00",
+      "detail": {
+        "step": "preflight"
+      }
+    }
+  ],
+  "status": "running",
+  "error": null
+}
