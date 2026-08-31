@@ -1,0 +1,76 @@
+{
+  "task_id": "955de379-af1e-4833-9157-185b5c3e5a65",
+  "title": "I have 5 friends. We want to play Minecraft Java Edition 26.2. No mods.",
+  "spec_id": null,
+  "started_at": "2026-08-31T13:44:01.039234+08:00",
+  "finished_at": "2026-08-31T13:45:34.253368600+08:00",
+  "steps": [
+    {
+      "kind": "llm",
+      "summary": "第 1 轮：2 个工具调用，文本 0 字",
+      "usage_refs": [],
+      "at": "2026-08-31T13:44:03.679247700+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    },
+    {
+      "kind": "llm",
+      "summary": "第 2 轮：1 个工具调用，文本 360 字",
+      "usage_refs": [],
+      "at": "2026-08-31T13:44:24.360158900+08:00",
+      "detail": {
+        "finish_reason": "tool_calls",
+        "notes": []
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "环境复检：✔",
+      "usage_refs": [],
+      "at": "2026-08-31T13:44:58.859796300+08:00",
+      "detail": {
+        "step": "preflight"
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "Java 供给：✔ 受管 JRE 就绪：jdk-25.0.4.1+1",
+      "usage_refs": [],
+      "at": "2026-08-31T13:45:10.895475200+08:00",
+      "detail": {
+        "step": "java"
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "获取服务端：✔ minecraft-server-26.2.jar",
+      "usage_refs": [],
+      "at": "2026-08-31T13:45:21.809713200+08:00",
+      "detail": {
+        "step": "download"
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "生成配置：✔",
+      "usage_refs": [],
+      "at": "2026-08-31T13:45:21.810644700+08:00",
+      "detail": {
+        "step": "config"
+      }
+    },
+    {
+      "kind": "exec",
+      "summary": "启动服务端：✔ 服务器就绪，用时 12 秒",
+      "usage_refs": [],
+      "at": "2026-08-31T13:45:34.251315300+08:00",
+      "detail": {
+        "step": "launch"
+      }
+    }
+  ],
+  "status": "done",
+  "error": null
+}
