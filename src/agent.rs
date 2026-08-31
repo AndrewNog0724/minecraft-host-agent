@@ -149,7 +149,7 @@ impl<'a> RequirementAgent<'a> {
             ),
             ToolDecl::new(
                 "check_version_compat",
-                "核对 MC 版本是否存在（官方清单），并返回该版本所需的 Java 大版本。任何版本号都必须经此工具核实。",
+                "核对 MC 版本是否存在（官方清单），并返回该版本所需的 Java 大版本。任何版本号都必须经此工具核实；报告 canonical_version 是官方清单原文 id，写草案时必须原样引用它。",
                 json!({
                     "type": "object",
                     "required": ["mc_version"],
@@ -220,19 +220,17 @@ impl<'a> RequirementAgent<'a> {
                     .known_releases()
                     .await
                     .map_err(|e| e.to_string())?;
-                let exists = crate::knowledge::normalize_version(&mc)
-                    .map(|v| {
-                        releases
-                            .iter()
-                            .filter_map(|r| crate::knowledge::normalize_version(r).ok())
-                            .any(|r| r == v)
-                    })
-                    .unwrap_or(false);
+                // 规范 id 原则（§8.4 v0.9.6）：存在性判定与"该抄哪个版本号"
+                // 统一走 canonicalize_version——报告里直接给清单原文 id，
+                // 模型写草案时应原样引用，不得自行改写（如 26.2 → 26.2.0）
+                let canonical = crate::knowledge::canonicalize_version(&releases, &mc);
+                let exists = canonical.is_some();
                 // v0.9：Java 需求以官方动态值为准（L1 表仅离线兜底），口径随报告返回
                 let (java_major, java_major_source) = self.deps.java_major_for_version(&mc).await;
                 let suggestions = crate::knowledge::suggest_versions(&releases, &mc, 5);
                 let report = CompatReport {
                     mc_version: mc,
+                    canonical_version: canonical,
                     exists,
                     java_major,
                     java_major_source,

@@ -17,9 +17,10 @@ use crate::spec::{
 pub type Answers = BTreeMap<String, String>;
 
 /// 从官方清单缓存里取最近 5 个版本作为追问选项。
+/// 输入顺序 = Mojang 清单顺序（发布时间倒序，最新在前）。
 fn latest_release_options(known_releases: Option<&[String]>) -> Vec<String> {
     let releases = known_releases.unwrap_or(&[]);
-    releases.iter().rev().take(5).rev().cloned().collect()
+    releases.iter().take(5).cloned().collect()
 }
 
 /// 决策树一轮推导的输出：要么齐备，要么带追问继续。
@@ -300,28 +301,40 @@ fn apply_mc_version(
                 allow_empty: false,
             });
         }
-        Ok(parsed) => {
-            // 存在性校验：只认官方清单（定制 2 验收：幻觉版本号必须被拒）
-            let exists_in_manifest = known_releases.is_none_or(|releases| {
-                releases.iter().any(|r| {
-                    knowledge::normalize_version(r)
-                        .map(|v| v == parsed)
-                        .unwrap_or(false)
-                })
-            });
-            if !exists_in_manifest {
-                let suggestions = known_releases
-                    .map(|releases| knowledge::suggest_versions(releases, &requested, 5))
-                    .unwrap_or_default();
-                questions.push(Question {
-                    topic: "mc_version".into(),
-                    text: format!("版本 {requested} 不存在于 Mojang 官方清单，请从相近版本中选择"),
-                    options: suggestions,
-                    allow_empty: false,
-                });
-                return;
+        Ok(_) => {
+            // 存在性校验：只认官方清单（定制 2 验收：幻觉版本号必须被拒）。
+            // 规范 id 原则（§8.4 v0.9.6）：命中清单后写**清单原文 id**，
+            // 不写归一化串——"26.2.0" 与清单原文 "26.2" 语义相等，但
+            // 归一化串回写会让部署 preflight 的清单比对自相矛盾。
+            match known_releases.and_then(|r| knowledge::canonicalize_version(r, &requested)) {
+                Some(canonical) => {
+                    if canonical != requested {
+                        spec.notes
+                            .push(format!("版本号按官方清单校正：{requested} → {canonical}"));
+                    }
+                    spec.mc_version = canonical;
+                }
+                None => {
+                    if known_releases.is_none() {
+                        // 无清单缓存（离线兜底）：保留用户原文，存在性由部署 preflight 复检
+                        spec.mc_version = requested.trim().to_string();
+                    } else {
+                        let suggestions = knowledge::suggest_versions(
+                            known_releases.unwrap_or(&[]),
+                            &requested,
+                            5,
+                        );
+                        questions.push(Question {
+                            topic: "mc_version".into(),
+                            text: format!(
+                                "版本 {requested} 不存在于 Mojang 官方清单，请从相近版本中选择"
+                            ),
+                            options: suggestions,
+                            allow_empty: false,
+                        });
+                    }
+                }
             }
-            spec.mc_version = parsed.to_string();
         }
     }
 }
@@ -464,6 +477,70 @@ mod tests {
         let q = questions.iter().find(|q| q.topic == "mc_version").unwrap();
         assert!(q.text.contains("不存在于 Mojang 官方清单"));
         assert!(!q.options.is_empty(), "必须给可用版本建议");
+    }
+
+    /// v0.9.6 实测缺陷回归：归一化串（26.2.0）不得进 spec，
+    /// 语义命中清单时写官方原文 id（26.2），否则 preflight 比对自相矛盾。
+    #[test]
+    fn 归一化串校正为清单原文id() {
+        let releases: Vec<String> = ["26.2", "26.1", "1.21.1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mk = |mc: &str| PartialSpec {
+            account_kind: Some("offline".into()),
+            software: Some("vanilla".into()),
+            mc_version: Some(mc.into()),
+            cross_network: Some(false),
+            ..Default::default()
+        };
+        let mut answers = Answers::new();
+        answers.insert("whitelist".into(), String::new());
+
+        // 26.2.0 → 校正为清单原文 26.2，并留痕
+        let TreeOutput::Complete(spec) =
+            derive_spec(&mk("26.2.0"), &answers, &kb(), Some(&releases))
+        else {
+            panic!("26.2.0 语义合法应收敛");
+        };
+        assert_eq!(spec.mc_version, "26.2", "必须写清单原文而非归一化串");
+        assert!(spec.notes.iter().any(|n| n.contains("26.2.0 → 26.2")));
+        assert_eq!(spec.java.required_major, 25, "Java 需求查表不受影响");
+
+        // 原文输入原样保留，不加校正痕迹
+        let TreeOutput::Complete(spec) = derive_spec(&mk("26.2"), &answers, &kb(), Some(&releases))
+        else {
+            panic!("清单原文应收敛");
+        };
+        assert_eq!(spec.mc_version, "26.2");
+        assert!(!spec.notes.iter().any(|n| n.contains("校正")));
+    }
+
+    /// v0.9.6 同类缺陷回归：清单为新版本在前，追问选项必须取前 5（最新），
+    /// 不得反转成最老的 5 个版本。
+    #[test]
+    fn 版本追问选项取最新一批() {
+        let releases: Vec<String> = [
+            "26.2", "26.1", "1.21.1", "1.21", "1.20.6", "1.20.4", "1.19.2",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let draft = PartialSpec {
+            account_kind: Some("offline".into()),
+            software: Some("vanilla".into()),
+            cross_network: Some(false),
+            ..Default::default()
+        };
+        let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases));
+        let TreeOutput::NeedInput { questions, .. } = out else {
+            panic!("缺版本应追问");
+        };
+        let q = questions.iter().find(|q| q.topic == "mc_version").unwrap();
+        assert_eq!(
+            q.options,
+            releases.iter().take(5).cloned().collect::<Vec<_>>()
+        );
     }
 
     #[test]

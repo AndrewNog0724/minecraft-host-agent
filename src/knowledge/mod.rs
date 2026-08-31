@@ -153,6 +153,9 @@ impl KnowledgeBase {
 
 /// 归一化 MC 版本号：补全 patch 段（"1.21" → "1.21.0"），
 /// 非法输入（如快照名、乱码）返回 [`KnowledgeError::BadVersion`]。
+///
+/// 注意：补全只用于**语义比较**，返回值不得回写存储或拼上游 URL——
+/// 存储与 API 调用一律用官方清单原文 id（见 [`canonicalize_version`]）。
 pub fn normalize_version(input: &str) -> Result<semver::Version, KnowledgeError> {
     let trimmed = input.trim().trim_start_matches('v');
     if trimmed.is_empty() {
@@ -171,10 +174,26 @@ pub fn normalize_version(input: &str) -> Result<semver::Version, KnowledgeError>
     })
 }
 
+/// 在官方清单中找出与请求版本**语义相等**的条目，返回清单原文 id。
+///
+/// 这是"规范版本 id 原则"（§8.4，v0.9.6）的统一入口：`26.2.0` 与清单里的
+/// `26.2` 语义相等，但 jar 下载等上游 API 只认原文 `26.2`——写入
+/// `ServerSpec` 必须经这里取原文，而不是归一化字符串。
+pub fn canonicalize_version(releases: &[String], requested: &str) -> Option<String> {
+    let parsed = normalize_version(requested).ok()?;
+    releases
+        .iter()
+        .find(|r| normalize_version(r).is_ok_and(|v| v == parsed))
+        .cloned()
+}
+
 /// 版本校验结论（决策树与 LLM 工具的返回格式）。
 #[derive(Debug, Clone, Serialize)]
 pub struct CompatReport {
     pub mc_version: String,
+    /// 官方清单原文 id（存在时给出，模型应直接抄它写草案，而非自行改写版本号）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_version: Option<String>,
     pub exists: bool,
     pub java_major: Option<u8>,
     /// Java 需求口径来源（v0.9）：manifest = 官方动态值，l1_fallback = 静态表
@@ -314,6 +333,30 @@ mod tests {
             normalize_version("26.3-snapshot-10").is_err(),
             "年份制快照非法"
         );
+    }
+
+    #[test]
+    fn 规范id取清单原文而非归一化串() {
+        let available: Vec<String> = ["26.2", "26.1", "1.21.1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // 实测缺陷回归：26.2.0 是归一化串，清单原文是 26.2，语义相等
+        assert_eq!(
+            canonicalize_version(&available, "26.2.0").as_deref(),
+            Some("26.2")
+        );
+        assert_eq!(
+            canonicalize_version(&available, "26.2").as_deref(),
+            Some("26.2")
+        );
+        assert_eq!(
+            canonicalize_version(&available, "1.21.1").as_deref(),
+            Some("1.21.1")
+        );
+        // 语义不存在 → None（交给调用方走拒绝/建议路径）
+        assert_eq!(canonicalize_version(&available, "26.3"), None);
+        assert_eq!(canonicalize_version(&available, "25w14a"), None);
     }
 
     #[test]

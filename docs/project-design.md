@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.9.5（活文档，持续迭代）
+- **版本**：v0.9.6（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -316,7 +316,7 @@ struct TaskTrace {
 
 - 静态知识库（L1，分层体系见 §8.9）：随包资源文件（TOML），含 MC→Java 映射、加载器生态、常见端口、mod 中文别名表（`search_mods` 先查别名再查 Modrinth）、崩溃错误模式库（供 diagnose 使用）；带版本号与来源日期，可独立更新。
 - 上游客户端：Mojang piston-meta、PaperMC v2、Fabric meta、Modrinth v2、**Adoptium v3（Java 供给，见 §8.8）**、**SakuraFrp v4（穿透，见 §8.6）**；统一 trait `UpstreamClient`，代理与镜像在 HTTP 层统一注入。
-- 版本校验管线：`semver` 形式校验（只受理 `x.y[.z]` 纯数字正式版——**2026 起 Mojang 改用年份制版本号**，`26.2` / `26.1.2` 与传统 `1.21.1` 均合法，快照（`26.3-snapshot-N`）与胡编输入拒绝；v0.8.2 勘误：原"非法输入如 26.2 直接拒绝"系 1.x 时代假设，代码与测试实际早已按形式校验处理）→ 上游存在性核对（piston-meta 清单，决策树与部署前各一道闸）→ **Java 需求动态化（v0.9，"能查就不猜"）**：以版本 JSON 的 `javaVersion.majorVersion` 为事实来源（Mojang 官方启动器同源；实测 Java 21→25 的分界在 26.1），L1 静态表降级为**离线兜底**，`CompatReport.java_major_source` 标明口径（manifest / l1_fallback / unknown）→ 依赖闭包解析（Modrinth `dependencies` 递归展开）→ 产出带哈希的下载清单。
+- 版本校验管线：`semver` 形式校验（只受理 `x.y[.z]` 纯数字正式版——**2026 起 Mojang 改用年份制版本号**，`26.2` / `26.1.2` 与传统 `1.21.1` 均合法，快照（`26.3-snapshot-N`）与胡编输入拒绝；v0.8.2 勘误：原"非法输入如 26.2 直接拒绝"系 1.x 时代假设，代码与测试实际早已按形式校验处理）→ 上游存在性核对（piston-meta 清单，决策树与部署前各一道闸；**规范版本 id 原则（v0.9.6）**：`normalize_version` 补全的 patch 段仅用于语义比较，**绝不回写**——写入 `ServerSpec.mc_version` 与下游 API（jar 下载 / Fabric meta / Modrinth）一律使用官方清单原文 id（决策树命中清单时经 `canonicalize_version` 取原文；部署 preflight 精确匹配失败时语义比对并自动校正存量 spec，如 `26.2.0` → `26.2`，校正留痕，仍无匹配才拒绝）→ **Java 需求动态化（v0.9，"能查就不猜"）**：以版本 JSON 的 `javaVersion.majorVersion` 为事实来源（Mojang 官方启动器同源；实测 Java 21→25 的分界在 26.1），L1 静态表降级为**离线兜底**，`CompatReport.java_major_source` 标明口径（manifest / l1_fallback / unknown）→ 依赖闭包解析（Modrinth `dependencies` 递归展开）→ 产出带哈希的下载清单。
 
 ### 8.5 provision：决策树引擎与执行流水线
 
@@ -616,3 +616,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.9.4 | R6 展示勘误："本次费用"进度条此前误用终身账本（`read_usage()` 全量求和，跨运行递增）；改为事件泵内本地累计本次运行费用，终身账本仅保留给 `mcha usage` 总账命令，两套口径分离 |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |
 | 2026-08-31 | v0.9.5 | 实测缺陷修复（澄清循环）：① CLI 层每轮传空回答表且 `merge_answers` 缺 whitelist 分支，用户白名单输入被静默丢弃 → 决策树反复追问直至 3 轮超限退出（`mcha plan` 为无限循环）；修复为循环外累积 Answers 并逐轮传入 `derive_spec`，`cmd_plan` 补 3 轮上限。② 白名单从"强制必选"改为"建议可选"（Question 新增 `allow_empty`），明确跳过 → `white-list=false`；`exec.rs` 两个白名单开关按名单是否非空写入，消除"空白名单 + white-list=true 锁死服务器"隐患；ID 分隔符移除空格 |
+| 2026-08-31 | v0.9.6 | 规范版本 id 原则（§8.4，实测缺陷修复）：决策树曾把 semver 归一化结果回写 `ServerSpec.mc_version`（`26.2` → `26.2.0`），导致部署 preflight 字符串精确比对清单失败（"版本不存在，相近版本 26.2"）——自造差异、自己拒绝自己。修复三处：① `knowledge::canonicalize_version` 统一"语义比较、原文回写"；② 决策树命中清单时写清单原文 id（含 `26.2.0` 这类输入的自动校正），`CompatReport` 增 `canonical_version` 让模型直接抄官方 id；③ preflight 精确匹配失败先语义比对并自愈存量 spec（含旧档案），校正留痕，仍无匹配才报错给建议 |

@@ -230,20 +230,35 @@ pub async fn deploy(
 }
 
 async fn preflight(
-    spec: &ServerSpec,
+    spec: &mut ServerSpec,
     ctx: &DeployContext,
     task_id: &TaskId,
 ) -> Result<(), DeployError> {
-    // 版本存在性复检（决策树可能未带官方清单缓存）
+    // 版本存在性复检（决策树可能未带官方清单缓存）。
+    // 规范 id 原则（§8.4 v0.9.6）：精确匹配失败先做语义比对并自愈——
+    // 存量 spec 里可能是归一化串（如 26.2.0），语义上就是清单里的 26.2，
+    // 应校正后继续，而不是自相矛盾地拒绝用户要的版本。
     let mojang = MojangClient::new(ctx.http.clone());
     let releases = mojang.release_versions().await?;
     if !releases.iter().any(|r| r == &spec.mc_version) {
-        let suggestions = crate::knowledge::suggest_versions(&releases, &spec.mc_version, 5);
-        return Err(DeployError::Preflight(format!(
-            "MC 版本 {} 不存在。相近版本：{}",
-            spec.mc_version,
-            suggestions.join(", ")
-        )));
+        match crate::knowledge::canonicalize_version(&releases, &spec.mc_version) {
+            Some(canonical) => {
+                tracing::info!(
+                    "版本号校正：{} → {canonical}（官方清单原文，语义相等）",
+                    spec.mc_version
+                );
+                spec.mc_version = canonical;
+            }
+            None => {
+                let suggestions =
+                    crate::knowledge::suggest_versions(&releases, &spec.mc_version, 5);
+                return Err(DeployError::Preflight(format!(
+                    "MC 版本 {} 不存在。相近版本：{}",
+                    spec.mc_version,
+                    suggestions.join(", ")
+                )));
+            }
+        }
     }
     ctx.bus.publish(ProgressEvent::StepProgress {
         task_id: task_id.clone(),
