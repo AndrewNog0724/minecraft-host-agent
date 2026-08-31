@@ -81,6 +81,9 @@ pub struct HttpBase {
     mirrors: Vec<(String, String)>,
 }
 
+/// 常规请求默认超时（整体上限；探针类调用用 get_json_timeout 单独收紧）。
+const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl HttpBase {
     pub fn new(cfg: &AppConfig) -> Result<Self, UpstreamError> {
         let mut builder = reqwest::Client::builder()
@@ -116,11 +119,22 @@ impl HttpBase {
 
     /// GET 并解析为 JSON。瞬时网络失败自动重试（NFR-3）。
     pub async fn get_json(&self, url: &str) -> Result<serde_json::Value, UpstreamError> {
+        self.get_json_timeout(url, DEFAULT_REQUEST_TIMEOUT).await
+    }
+
+    /// GET 并解析为 JSON，单请求超时独立控制（上游探针快速失败用，决议 D22
+    /// v0.11.1 勘误：镜像探针曾继承客户端级 120s 超时，国内不可达时表现为
+    /// 数分钟静默假死）。重试语义与 [`Self::get_json`] 一致。
+    pub async fn get_json_timeout(
+        &self,
+        url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, UpstreamError> {
         let url = self.apply_mirrors(url);
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match self.http.get(&url).send().await {
+            match self.http.get(&url).timeout(timeout).send().await {
                 // 瞬时失败（连接/超时/中断）重试后重新发起
                 Err(e) if attempt < 3 && is_transient_reqwest(&e) => {
                     tracing::warn!("GET {url} 第 {attempt} 次失败，重试：{e}");
@@ -440,11 +454,17 @@ impl SpigotClient {
 
     /// 指定 MC 版本的 Spigot 服务端下载项。
     /// 渠道① getbukkit v2 API：返回直链，哈希可得即携带（有则强制校验）；
+    /// 探询单请求 15s 快速失败（v0.11.1 勘误：继承 120s 超时在国内网络下
+    /// 表现为静默假死）。
     /// 渠道② 直链模式回退：API 不可达时按命名规则拼 URL（无哈希，
     /// 来源会在部署轨迹中明示"第三方镜像"）。
     pub async fn server_jar(&self, mc_version: &str) -> Result<DownloadItem, UpstreamError> {
         let api_url = format!("{}/{mc_version}", Self::API);
-        match self.base.get_json(&api_url).await {
+        match self
+            .base
+            .get_json_timeout(&api_url, std::time::Duration::from_secs(15))
+            .await
+        {
             Ok(json) => {
                 // v2 形态：单版本请求返回对象 {name, version, url, ...}；
                 // 防御清单式响应（数组时按 version 字段定位条目）

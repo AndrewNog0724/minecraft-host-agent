@@ -250,12 +250,63 @@ pub async fn resolve_java(
         }
     }
 
-    // ③ 受管目录复用（历史兼容：数据目录 runtime/）
-    if let Some((path, dir_name)) = find_managed_java(data_dir, required_major) {
+    // ③ 受管目录复用（历史兼容：数据目录 runtime/）。
+    // 决议 D21 v0.11.1：Windows 下先尝试把旧受管 JRE 迁移到统一安装根
+    // Program Files\Java\；UAC 被拒后记旗标不再反复弹窗。
+    if let Some((path, _dir_name)) = find_managed_java(data_dir, required_major) {
+        let mut final_path = path.clone();
+        if cfg!(windows) {
+            let declined_marker = data_dir.join("runtime").join("migrate-declined.flag");
+            let declined_before = declined_marker.is_file();
+            let migrated = if declined_before {
+                None
+            } else {
+                migrate_managed_to_program_files(&path, required_major).await
+            };
+            match migrated {
+                Some(new_path) => {
+                    final_path = new_path.clone();
+                    let _ = std::fs::remove_file(&declined_marker);
+                    bus.publish(ProgressEvent::StepProgress {
+                        task_id: task_id.into(),
+                        step: step.into(),
+                        current: 0,
+                        total: None,
+                        detail: Some(format!(
+                            "旧受管 JRE 已迁移到统一安装根：{}",
+                            new_path.display()
+                        )),
+                    });
+                }
+                None => {
+                    let detail = if declined_before {
+                        format!(
+                            "此前已拒绝迁移，继续使用原位置：{path}（删除 {marker} 可重新启用自动迁移）",
+                            path = path.display(),
+                            marker = declined_marker.display()
+                        )
+                    } else {
+                        let _ = std::fs::write(&declined_marker, b"");
+                        format!(
+                            "JRE 迁移到 {} 未完成（UAC 被拒或移动失败），继续使用原位置：{}",
+                            program_files_java_root().display(),
+                            path.display()
+                        )
+                    };
+                    bus.publish(ProgressEvent::StepProgress {
+                        task_id: task_id.into(),
+                        step: step.into(),
+                        current: 0,
+                        total: None,
+                        detail: Some(detail),
+                    });
+                }
+            }
+        }
         return Ok(JavaRuntime::Managed {
-            path: path.to_string_lossy().to_string(),
+            path: final_path.to_string_lossy().to_string(),
             vendor: VENDOR.into(),
-            version: dir_name,
+            version: dir_name_of(&final_path),
         });
     }
 
@@ -450,12 +501,14 @@ fn expand_archive_script(zip_path: &Path, root: &Path) -> String {
     format!("\u{feff}{}\n", lines.join("\n"))
 }
 
-/// 经 UAC 提权把 JRE zip 解压到安装根（决议 D21）。
-/// 实现：临时 .ps1 → 外层 powershell 以 `Start-Process -Verb RunAs` 拉起
-/// 内层执行并透传退出码；UAC 被拒时外层抛异常、以非零退出码返回。
-async fn elevate_expand_archive(zip_path: &Path, root: &Path) -> Result<(), JavaError> {
-    let script_path = std::env::temp_dir().join("mcha-jre-install.ps1");
-    std::fs::write(&script_path, expand_archive_script(zip_path, root))
+/// 经 UAC 提权运行一段 PowerShell 脚本（决议 D21 公共件）。
+/// 临时 .ps1（UTF-8 BOM，由调用方的脚本生成函数保证）→ 外层 powershell 以
+/// `Start-Process -Verb RunAs` 拉起内层执行并透传退出码。返回内层退出码；
+/// UAC 被拒时内层未启动、外层以退出码 1 收场；进程被信号终止返回 Err。
+/// `tag` 用于临时脚本命名（jre-install / jre-move）。
+async fn run_elevated_ps(script_content: &str, tag: &str) -> Result<i32, JavaError> {
+    let script_path = std::env::temp_dir().join(format!("mcha-{tag}.ps1"));
+    std::fs::write(&script_path, script_content)
         .map_err(|e| JavaError::Install(format!("写提权脚本失败：{e}")))?;
     let outer = format!(
         "$p = Start-Process powershell -Verb RunAs -Wait -PassThru \
@@ -474,13 +527,86 @@ async fn elevate_expand_archive(zip_path: &Path, root: &Path) -> Result<(), Java
         .await
         .map_err(|e| JavaError::Install(format!("无法启动 PowerShell 提权流程：{e}")))?;
     let _ = std::fs::remove_file(&script_path);
-    if out.status.success() {
+    out.status
+        .code()
+        .ok_or_else(|| JavaError::Install("提权进程被信号终止".into()))
+}
+
+/// 经 UAC 提权把 JRE zip 解压到安装根（决议 D21）。
+async fn elevate_expand_archive(zip_path: &Path, root: &Path) -> Result<(), JavaError> {
+    let code = run_elevated_ps(&expand_archive_script(zip_path, root), "jre-install").await?;
+    if code == 0 {
         return Ok(());
     }
     Err(JavaError::Install(format!(
-        "提权安装未完成（退出码 {:?}；UAC 被拒或脚本执行失败）",
-        out.status.code()
+        "提权安装未完成（脚本退出码 {code}；UAC 被拒或脚本执行失败）"
     )))
+}
+
+/// 生成提权移动目录脚本（决议 D21 v0.11.1：旧受管 JRE 迁移到统一安装根）。
+/// 独立纯函数便于单测。退出码约定：0 成功；3 移动后目标缺 java.exe；
+/// 4 移动异常；5 目标已存在（不覆盖）。
+fn move_dir_script(src: &Path, dst: &Path) -> String {
+    let src_str = src.display().to_string();
+    let dst_str = dst.display().to_string();
+    let dst_parent = dst
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let lines = [
+        "$ErrorActionPreference = 'Stop'".to_string(),
+        format!("New-Item -ItemType Directory -Force -Path '{dst_parent}' | Out-Null"),
+        "try {".to_string(),
+        format!("  if (Test-Path -LiteralPath '{dst_str}') {{ exit 5 }}"),
+        format!("  Move-Item -LiteralPath '{src_str}' -Destination '{dst_str}' -Force"),
+        format!("  if (-not (Test-Path -LiteralPath '{dst_str}\\bin\\java.exe')) {{ exit 3 }}"),
+        "  exit 0".to_string(),
+        "} catch {".to_string(),
+        "  exit 4".to_string(),
+        "}".to_string(),
+    ];
+    // UTF-8 with BOM：Windows PowerShell 5.1 对无 BOM 文件按 GBK 误读（§8.7 同款约束）
+    format!("\u{feff}{}\n", lines.join("\n"))
+}
+
+/// 决议 D21 v0.11.1：Windows 下把数据目录里的旧受管 JRE 一次性迁移到
+/// 统一安装根 `C:\Program Files\Java\`。返回迁移后的 java 绝对路径；
+/// None = 迁移未完成（UAC 被拒 / 移动失败 / 目标已存在但扫描未命中），
+/// 调用方回退继续用原路径并留痕。
+async fn migrate_managed_to_program_files(java_path: &Path, required_major: u8) -> Option<PathBuf> {
+    let root = program_files_java_root();
+    if java_path.starts_with(&root) {
+        return Some(java_path.to_path_buf()); // 已在统一安装根
+    }
+    // 源版本目录 = java 路径上两级（.../<版本>/bin/java → <版本>）
+    let src_dir = java_path.parent()?.parent()?;
+    let dir_name = src_dir.file_name()?.to_string_lossy().to_string();
+    let target = root.join(&dir_name);
+
+    // 直接移动（同卷且进程可写 Program Files 时成功；普通权限会失败 → 提权）
+    if std::fs::rename(src_dir, &target).is_ok() {
+        return find_java_in_root(&root, required_major).await;
+    }
+    let code = match run_elevated_ps(&move_dir_script(src_dir, &target), "jre-move").await {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::warn!("提权迁移启动失败：{e}");
+            return None;
+        }
+    };
+    match code {
+        // 移动成功，或目标已有同名版本（不覆盖、改用现成安装）：
+        // 两种情况都以统一安装根的实际扫描结果为准
+        0 | 5 => find_java_in_root(&root, required_major).await,
+        1 => {
+            tracing::info!("UAC 被拒绝，JRE 保持原位置");
+            None
+        }
+        code => {
+            tracing::warn!("提权迁移失败（脚本退出码 {code}）");
+            None
+        }
+    }
 }
 
 /// 在解压目录里定位 java 可执行文件：官方压缩包均带顶层版本目录
@@ -672,6 +798,21 @@ mod tests {
         assert!(script.contains("Expand-Archive"));
         assert!(script.contains("exit 3"), "解压后无 java.exe 的失败码");
         assert!(script.contains("exit 4"), "解压异常的失败码");
+    }
+
+    /// 决议 D21 v0.11.1：迁移脚本——BOM、不覆盖目标（exit 5）、
+    /// 移动后 java.exe 校验（exit 3）。
+    #[test]
+    fn 迁移脚本内容_不覆盖与校验() {
+        let script = move_dir_script(
+            Path::new(r"C:\Users\a\AppData\Roaming\mcha\runtime\jdk-25\jdk-25.0.4.1+1-jre"),
+            Path::new(r"C:\Program Files\Java\jdk-25.0.4.1+1-jre"),
+        );
+        assert!(script.starts_with('\u{feff}'), "必须带 UTF-8 BOM");
+        assert!(script.contains(r"Move-Item -LiteralPath 'C:\Users\a\AppData\Roaming\mcha\runtime\jdk-25\jdk-25.0.4.1+1-jre'"));
+        assert!(script.contains(r"C:\Program Files\Java\jdk-25.0.4.1+1-jre"));
+        assert!(script.contains("exit 5"), "目标已存在必须不覆盖");
+        assert!(script.contains("bin\\java.exe"), "移动后须校验 java.exe");
     }
 
     #[test]

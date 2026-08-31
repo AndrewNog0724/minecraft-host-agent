@@ -108,6 +108,14 @@ cargo run --release -- config set workspace.path D:\mc-servers  # 服务端安�
 adoptium_mirror = ""
 ```
 
+### Spigot 获取失败怎么办（决议 D22，v0.11.1）
+
+SpigotMC 官方不提供 jar 直链（只随 BuildTools 编译分发），mcha 走 getbukkit 第三方镜像（API 探测 15 秒快速失败 → 直链回退）。镜像彻底不可达时按提示三选一：
+
+1. **稍后重试**（镜像偶发抖动）；
+2. **手动放置 jar**：自己从 `https://download.getbukkit.org/spigot/spigot-<版本>.jar` 下载，放进服务端安装目录后重跑 mcha——同名 jar 会被自动复用（该来源无官方哈希，复用会在轨迹中明示"第三方来源未校验"）；
+3. **BuildTools 手动编译**（官方正源）：`java -jar BuildTools.jar --rev <版本>`，需要 git 与 JDK；把产物 `spigot-<版本>.jar` 放进安装目录后同样走通道 2 复用。
+
 ## 演示用例
 
 ### 1. 一句话开服（主流程）

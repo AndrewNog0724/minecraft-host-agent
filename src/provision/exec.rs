@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sha1::Digest as _;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +23,8 @@ use super::process::{ProcessError, ServerProcess};
 pub enum DeployError {
     #[error("预检失败：{0}")]
     Preflight(String),
+    #[error("服务端获取失败：{0}")]
+    JarDownload(String),
     #[error("{0}")]
     Java(#[from] super::java::JavaError),
     #[error("{0}")]
@@ -210,16 +213,77 @@ async fn deploy_inner(
     spec.java.runtime = java_runtime;
     step_done(ctx, task_id, true, Some(java_detail), track);
 
-    // 服务端主 jar 下载（官方渠道 + 哈希校验）
+    // 服务端主 jar 下载（官方渠道 / 约定镜像 + 哈希校验）
     step_begin(ctx, task_id, "download", "获取服务端", track);
-    let jar_item = server_jar_item(spec, ctx).await?;
-    let jar_path = download(ctx, task_id, "download", &jar_item, &server_dir).await?;
+    // v0.11.1 勘误：直链解析阶段此前零反馈且不可取消（实测静默假死、Ctrl-C
+    // 无效）——步骤开始即发进度，解析调用整体接入取消令牌
+    ctx.bus.publish(ProgressEvent::StepProgress {
+        task_id: task_id.clone(),
+        step: "download".into(),
+        current: 0,
+        total: None,
+        detail: Some(format!(
+            "正在解析 {} {} 服务端下载直链（Ctrl-C 可随时中断）",
+            software_label(&spec.software),
+            spec.mc_version
+        )),
+    });
+    let jar_item = tokio::select! {
+        biased;
+        _ = ctx.cancel.cancelled() => return Err(DeployError::Cancelled),
+        item = server_jar_item(spec, ctx) => item?,
+    };
+    ctx.bus.publish(ProgressEvent::StepProgress {
+        task_id: task_id.clone(),
+        step: "download".into(),
+        current: 0,
+        total: None,
+        detail: Some(format!("下载渠道：{}", jar_item.url)),
+    });
+    // 应急通道（决议 D22 v0.11.1）：安装目录已有同名 jar → 校验/明示后复用
+    let mut reuse_note: Option<String> = None;
+    let jar_path = match reuse_existing_jar(&server_dir.join(&jar_item.file_name), &jar_item).await
+    {
+        Ok(Some(note)) => {
+            reuse_note = Some(note.clone());
+            ctx.bus.publish(ProgressEvent::StepProgress {
+                task_id: task_id.clone(),
+                step: "download".into(),
+                current: 0,
+                total: None,
+                detail: Some(note),
+            });
+            server_dir.join(&jar_item.file_name)
+        }
+        Ok(None) => match download(ctx, task_id, "download", &jar_item, &server_dir).await {
+            Ok(p) => p,
+            Err(e) => {
+                let extra = if matches!(spec.software, ServerSoftware::Spigot) {
+                    "；③ 也可参见 README「Spigot 获取失败怎么办」改用 BuildTools 手动编译"
+                } else {
+                    ""
+                };
+                return Err(DeployError::JarDownload(format!(
+                    "{e}\n可执行出路：① 稍后重试（上游镜像偶发抖动）；\
+                         ② 手动下载 {url} 放到 {dir} 后重跑（会自动复用）{extra}",
+                    url = jar_item.url,
+                    dir = server_dir.display(),
+                )));
+            }
+        },
+        Err(e) => return Err(DeployError::Io(format!("检查已有 jar 失败：{e}"))),
+    };
     // 决议 D19 ⑨：来源 URL 显式可见并入轨迹（实测用户问"服务端哪来的"）
     step_done(
         ctx,
         task_id,
         true,
-        Some(format!("{}（来源：{}）", jar_item.file_name, jar_item.url)),
+        Some(format!(
+            "{}（来源：{}）{}",
+            jar_item.file_name,
+            jar_item.url,
+            reuse_note.map(|n| format!("；{n}")).unwrap_or_default()
+        )),
         track,
     );
 
@@ -454,6 +518,55 @@ async fn download(
         })
         .await?;
     Ok(path)
+}
+
+/// 软件类型的中文标签（进度与轨迹展示用）。
+fn software_label(sw: &ServerSoftware) -> &'static str {
+    match sw {
+        ServerSoftware::Vanilla => "原版",
+        ServerSoftware::Spigot => "Spigot",
+        ServerSoftware::Paper { .. } => "Paper",
+        ServerSoftware::Fabric { .. } => "Fabric",
+    }
+}
+
+/// 应急通道判定（决议 D22 v0.11.1）：安装目录已有同名 jar 时是否复用。
+/// 返回 Ok(Some(说明)) = 复用（说明入轨迹）；Ok(None) = 走正常下载。
+/// 规则：有哈希 → 实算比对，匹配才复用，不符重下覆盖；
+/// 无哈希（getbukkit 镜像常态）→ 文件非空且 ≥1MB 即复用，轨迹明示
+/// "第三方来源未校验"；过小文件视为占位/残件，直接重下。
+async fn reuse_existing_jar(path: &Path, item: &DownloadItem) -> Result<Option<String>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() < 1024 * 1024 {
+        return Ok(None);
+    }
+    let has_hash = item.sha1.is_some() || item.sha256.is_some();
+    if !has_hash {
+        return Ok(Some(format!(
+            "已有同名文件（{} 字节），该来源无官方哈希可校验，按应急通道复用（第三方来源未校验）",
+            meta.len()
+        )));
+    }
+    let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+    if let Some(expected) = &item.sha256 {
+        let actual = hex::encode(sha2::Sha256::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Ok(None);
+        }
+    }
+    if let Some(expected) = &item.sha1 {
+        let actual = hex::encode(sha1::Sha1::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(format!(
+        "已有同名文件（{} 字节），哈希校验通过，复用本地文件",
+        meta.len()
+    )))
 }
 
 /// mod 名称 → Modrinth 依赖闭包（别名表优先，检索兜底，全部确定性）。
@@ -711,6 +824,48 @@ mod tests {
         assert!(s.contains("cd \"$(dirname \"$0\")\""));
         assert!(s.contains("-Xms2048M -Xmx4096M -jar spigot-26.2.jar nogui"));
         assert!(!s.contains('\r'), "sh 必须 LF 行尾");
+    }
+
+    /// 决议 D22 v0.11.1：应急通道——同名 jar 无哈希复用 / 哈希校验复用。
+    #[tokio::test]
+    async fn 应急通道_无哈希复用与哈希校验() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("spigot-26.2.jar");
+        let mk = |sha256: Option<String>| DownloadItem {
+            url: "https://download.getbukkit.org/spigot/spigot-26.2.jar".into(),
+            sha1: None,
+            sha256,
+            file_name: "spigot-26.2.jar".into(),
+            kind: DownloadKind::ServerJar,
+        };
+
+        // 文件不存在 → 走下载
+        assert!(reuse_existing_jar(&p, &mk(None)).await.unwrap().is_none());
+        // 过小文件（残件/占位）→ 不复用，重下覆盖
+        std::fs::write(&p, b"garbage").unwrap();
+        assert!(reuse_existing_jar(&p, &mk(None)).await.unwrap().is_none());
+        // 无哈希 + 足够大 → 复用并明示"未校验"
+        let blob = vec![0u8; 2 * 1024 * 1024];
+        std::fs::write(&p, &blob).unwrap();
+        let note = reuse_existing_jar(&p, &mk(None))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("无哈希大文件应复用"));
+        assert!(note.contains("未校验"), "{note}");
+        // sha256 匹配 → 复用
+        let hash = hex::encode(sha2::Sha256::digest(&blob));
+        let note = reuse_existing_jar(&p, &mk(Some(hash)))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("哈希匹配应复用"));
+        assert!(note.contains("哈希校验通过"), "{note}");
+        // sha256 不符 → 重下
+        assert!(
+            reuse_existing_jar(&p, &mk(Some("deadbeef".into())))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
 
