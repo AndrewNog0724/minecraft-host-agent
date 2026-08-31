@@ -297,7 +297,7 @@ impl<'a> ProvisionAgent<'a> {
         )
         .await;
         match result {
-            Ok(rt) => {
+            Ok((rt, provenance)) => {
                 let detail = match &rt {
                     JavaRuntime::System { path, version } => {
                         format!("使用系统 Java {version}（{path}）")
@@ -307,6 +307,11 @@ impl<'a> ProvisionAgent<'a> {
                         format!("受管 JRE {version} 已就绪：{path}")
                     }
                     JavaRuntime::Pending => "Java 运行时未就绪".into(),
+                };
+                // v0.12.3（实测 A1）：迁移/复用来源必须进收尾摘要，不允许静默降级
+                let detail = match &provenance {
+                    Some(note) => format!("{detail}（{note}）"),
+                    None => detail,
                 };
                 let java_path = managed_java_path(&rt);
                 self.spec.java.runtime = rt;

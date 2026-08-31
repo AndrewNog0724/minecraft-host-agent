@@ -42,10 +42,11 @@ pub enum JavaError {
 /// UAC 提权等待上限（决议 D27）：弹窗未被确认时绝不永久挂起。
 const ELEVATION_TIMEOUT_SECS: u64 = 120;
 
-/// 平台 java 可执行相对路径。
+/// 平台 java 可执行相对路径（v0.12.3：按平台用各自的分隔符，
+/// 避免 Windows 上 Display 出现 `bin/java.exe` 混合斜杠）。
 fn java_bin_relative() -> &'static str {
     if cfg!(windows) {
-        "bin/java.exe"
+        "bin\\java.exe"
     } else {
         "bin/java"
     }
@@ -82,11 +83,17 @@ fn parse_java_major(output: &str) -> Option<u8> {
 
 /// 探测系统 PATH 上的 Java：返回 (可执行名, 完整版本串, 大版本)。
 async fn probe_system_java() -> Result<Option<(String, String, u8)>, JavaError> {
-    let output = tokio::process::Command::new("java")
+    // "PATH 里没有 java" 是常态（目标用户多为未装 Java 的玩家），不是错误：
+    // NotFound 归一为 Ok(None)，只有真实异常（权限等）才作为 Err 上抛（v0.12.3）
+    let output = match tokio::process::Command::new("java")
         .arg("-version")
         .output()
         .await
-        .map_err(|e| JavaError::Probe(format!("无法执行 java：{e}")))?;
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(JavaError::Probe(format!("无法执行 java：{e}"))),
+    };
     // 注意：`java -version` 把版本信息打到 stderr
     let text = String::from_utf8_lossy(&output.stderr);
     let Some(version_line) = text.lines().next() else {
@@ -199,6 +206,8 @@ pub fn managed_java_path(runtime: &JavaRuntime) -> Option<String> {
 /// 主入口：按 §8.8 选择顺序拿到满足 `required_major` 的 Java 运行时。
 /// 步骤的开始/结束事件由调用方（exec::deploy）统一发布；本函数只发过程性
 /// StepProgress（渠道、字节进度等），避免同名步骤的双重进度条（v0.10）。
+/// 返回值第二项是**来源注记**（v0.12.3）：Java 从哪来、迁移是否发生/为何
+/// 跳过——调用方必须把它并入步骤收尾摘要，不允许静默降级（实测 A1）。
 pub async fn resolve_java(
     required_major: u8,
     cfg: &crate::config::AppConfig,
@@ -207,16 +216,19 @@ pub async fn resolve_java(
     bus: &EventBus,
     task_id: &str,
     cancel: CancellationToken,
-) -> Result<JavaRuntime, JavaError> {
+) -> Result<(JavaRuntime, Option<String>), JavaError> {
     let step = "java";
 
     // ① 系统 PATH
     match probe_system_java().await {
         Ok(Some((path, version, major))) if major == required_major => {
-            return Ok(JavaRuntime::System {
-                path,
-                version: version.clone(),
-            });
+            return Ok((
+                JavaRuntime::System {
+                    path,
+                    version: version.clone(),
+                },
+                Some(format!("使用系统 PATH 中的 Java {version}")),
+            ));
         }
         Ok(found) => {
             let detail = found
@@ -238,11 +250,14 @@ pub async fn resolve_java(
         let root = program_files_java_root();
         match find_java_in_root(&root, required_major).await {
             Some(path) => {
-                return Ok(JavaRuntime::Managed {
-                    path: path.to_string_lossy().to_string(),
-                    vendor: VENDOR.into(),
-                    version: dir_name_of(&path),
-                });
+                return Ok((
+                    JavaRuntime::Managed {
+                        path: path.to_string_lossy().to_string(),
+                        vendor: VENDOR.into(),
+                        version: dir_name_of(&path),
+                    },
+                    Some(format!("复用统一安装根已有安装：{}", path.display())),
+                ));
             }
             None => bus.publish(ProgressEvent::StepProgress {
                 task_id: task_id.into(),
@@ -262,6 +277,7 @@ pub async fn resolve_java(
     // Program Files\Java\；UAC 被拒后记旗标不再反复弹窗。
     if let Some((path, _dir_name)) = find_managed_java(data_dir, required_major) {
         let mut final_path = path.clone();
+        let note: Option<String>;
         if cfg!(windows) {
             let declined_marker = data_dir.join("runtime").join("migrate-declined.flag");
             let declined_before = declined_marker.is_file();
@@ -284,47 +300,52 @@ pub async fn resolve_java(
                 Some(new_path) => {
                     final_path = new_path.clone();
                     let _ = std::fs::remove_file(&declined_marker);
+                    note = Some(format!(
+                        "旧受管 JRE 已迁移到统一安装根：{}",
+                        new_path.display()
+                    ));
                     bus.publish(ProgressEvent::StepProgress {
                         task_id: task_id.into(),
                         step: step.into(),
                         current: 0,
                         total: None,
-                        detail: Some(format!(
-                            "旧受管 JRE 已迁移到统一安装根：{}",
-                            new_path.display()
-                        )),
+                        detail: Some(note.clone().unwrap_or_default()),
                     });
                 }
                 None => {
-                    let detail = if declined_before {
+                    // v0.12.3（实测 A1）：跳过原因必须进收尾摘要，不允许静默
+                    note = Some(if declined_before {
                         format!(
-                            "此前已拒绝迁移，继续使用原位置：{path}（删除 {marker} 可重新启用自动迁移）",
-                            path = path.display(),
-                            marker = declined_marker.display()
+                            "沿用数据目录旧安装（此前已拒绝迁移；删除 {} 可重新启用自动迁移）",
+                            declined_marker.display()
                         )
                     } else {
                         let _ = std::fs::write(&declined_marker, b"");
                         format!(
-                            "JRE 迁移到 {} 未完成（UAC 被拒或移动失败），继续使用原位置：{}",
-                            program_files_java_root().display(),
-                            path.display()
+                            "沿用数据目录旧安装（迁移到 {} 未完成：UAC 被拒/超时/移动失败）",
+                            program_files_java_root().display()
                         )
-                    };
+                    });
                     bus.publish(ProgressEvent::StepProgress {
                         task_id: task_id.into(),
                         step: step.into(),
                         current: 0,
                         total: None,
-                        detail: Some(detail),
+                        detail: Some(note.clone().unwrap_or_default()),
                     });
                 }
             }
+        } else {
+            note = Some("使用数据目录受管安装（非 Windows 平台）".into());
         }
-        return Ok(JavaRuntime::Managed {
-            path: final_path.to_string_lossy().to_string(),
-            vendor: VENDOR.into(),
-            version: dir_name_of(&final_path),
-        });
+        return Ok((
+            JavaRuntime::Managed {
+                path: final_path.to_string_lossy().to_string(),
+                vendor: VENDOR.into(),
+                version: dir_name_of(&final_path),
+            },
+            note,
+        ));
     }
 
     // ④ Adoptium 下载安装（zip 免安装包，sha256 强制校验）
@@ -469,11 +490,14 @@ pub async fn resolve_java(
     let _ = tokio::fs::remove_file(&zip_path).await; // 清理临时 zip，失败不影响结果
 
     let java_path = java_path.ok_or(JavaError::JavaBinaryNotFound)?;
-    Ok(JavaRuntime::Managed {
-        path: java_path.to_string_lossy().to_string(),
-        vendor: VENDOR.into(),
-        version: dir_name_of(&java_path),
-    })
+    Ok((
+        JavaRuntime::Managed {
+            path: java_path.to_string_lossy().to_string(),
+            vendor: VENDOR.into(),
+            version: dir_name_of(&java_path),
+        },
+        Some(format!("新受管安装完成：{}", java_path.display())),
+    ))
 }
 
 /// 从 java 绝对路径反推版本目录名（`.../<版本>/bin/java` 的 `<版本>` 段）。
@@ -838,9 +862,14 @@ mod integration {
         let bus = crate::events::EventBus::new();
         let cancel = CancellationToken::new();
 
-        let runtime = resolve_java(21, &cfg, data.path(), &base, &bus, "t-java", cancel)
-            .await
-            .unwrap_or_else(|e| panic!("供给失败：{e}"));
+        let (runtime, provenance) =
+            resolve_java(21, &cfg, data.path(), &base, &bus, "t-java", cancel)
+                .await
+                .unwrap_or_else(|e| panic!("供给失败：{e}"));
+        assert!(
+            provenance.is_some(),
+            "供给来源必须有注记（v0.12.3 A1：不允许静默降级）"
+        );
 
         let java_path =
             managed_java_path(&runtime).unwrap_or_else(|| panic!("应得到可用 java 路径"));

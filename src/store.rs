@@ -278,8 +278,8 @@ impl Store {
     }
 }
 
-/// 仓库内会话备份（v0.9.2 调试设施）：把任务轨迹 / 对话原文 / 事件流镜像到
-/// `<仓库>/session-backups/<task_id>/`，便于把故障现场整目录提交进 git 分析。
+/// 会话备份（v0.9.2 调试设施）：把任务轨迹 / 对话原文 / 事件流镜像到
+/// `<备份根>/session-backups/<task_id>/`，便于把故障现场整目录提交分析。
 /// 与数据目录 `~/.mcha/sessions/`、仓库既有的 `sessions/`（基线实验材料）互不影响。
 /// 备份是非关键路径：任何写入失败只 warn，不影响主流程。
 pub struct SessionBackup {
@@ -287,12 +287,14 @@ pub struct SessionBackup {
 }
 
 impl SessionBackup {
-    /// 定位备份根目录：环境变量 `MCHA_BACKUP_DIR` 优先，
-    /// 否则用编译期仓库路径（pull → build → run 工作流下即仓库目录）。
+    /// 定位备份根目录：环境变量 `MCHA_BACKUP_DIR` 优先；
+    /// **v0.12.3（实测 A4）**：默认改用数据目录（`~/.mcha/`）——原默认是
+    /// 编译期 `CARGO_MANIFEST_DIR`，全局安装后该路径纯属构建机巧合，
+    /// 换机运行会指向不存在的目录。
     pub fn open() -> Self {
         let root = std::env::var_os("MCHA_BACKUP_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("session-backups"));
+            .unwrap_or_else(|| crate::config::data_dir().join("session-backups"));
         Self { root }
     }
 

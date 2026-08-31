@@ -564,24 +564,38 @@ fn start_script_content(
 }
 
 /// 连接说明（FR-07）。
+/// 本机局域网 IPv4：UDP connect（不发任何包）让内核按路由选源地址。
+/// 路由目标用国内公共 DNS，贴合目标用户的网络环境；取不到回退 None。
+fn detect_lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("223.5.5.5:80").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4.to_string()),
+        _ => None,
+    }
+}
+
 pub(crate) fn connection_info(spec: &ServerSpec) -> ConnectionInfo {
+    let lan_ip = detect_lan_ip().unwrap_or_else(|| "<本机 IP>".into());
     let mut lines = vec![
-        format!("本机连接：localhost:{}", spec.port),
-        "局域网朋友：连接 <你的内网 IP>（ipconfig / ifconfig 查看）".to_string(),
+        format!("本机连接：127.0.0.1:{}", spec.port),
+        format!("局域网朋友：连接 {lan_ip}:{}", spec.port),
     ];
     match &spec.network {
         NetworkPlan::LanOnly => lines.push("仅在局域网内游玩".into()),
         NetworkPlan::Direct { firewall_hint } => {
             lines.push(format!("跨网络：{firewall_hint}"));
-            lines.push(format!("朋友连接地址：<你的公网 IP>:{}", spec.port));
+            lines.push(format!(
+                "朋友连接地址：<你的公网 IP>:{}（公网 IP 可在路由器管理页或搜索“IP 查询”获得；无公网 IP 时需要内网穿透，见下方提示）",
+                spec.port
+            ));
         }
         NetworkPlan::Tunnel { .. } => {
             lines.push("内网穿透端点已写入档案（P1）".into());
         }
     }
-    for note in &spec.notes {
-        lines.push(format!("提示：{note}"));
-    }
+    // v0.12.3（实测 B3）：注意事项已在方案摘要展示过（FR-17），连接卡片只保留
+    // 连接本身，不再整段重复 notes。
     ConnectionInfo { lines }
 }
 
@@ -760,6 +774,36 @@ mod tests {
         );
         assert_ne!(offline_uuid("AndrewNog"), offline_uuid("KL_cgt_"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.12.3（A2/B3）：连接卡片内网 IP 自动探测 + 不再整段重复 notes。
+    #[test]
+    fn 连接卡片真实内网ip且不重复注意事项() {
+        let mut spec = ServerSpec::new("conn-test");
+        spec.mc_version = "26.2".into();
+        spec.software = ServerSoftware::Spigot;
+        spec.account = AccountPolicy::Offline {
+            whitelist: vec!["AndrewNog".into()],
+        };
+        spec.network = NetworkPlan::Direct {
+            firewall_hint: "在路由器上转发 25565".into(),
+        };
+        spec.notes = vec!["MC 26.2 需要 Java 25，将由本工具自动供给".into()];
+        let card = connection_info(&spec);
+        let lan = card
+            .lines
+            .iter()
+            .find(|l| l.starts_with("局域网朋友"))
+            .expect("应含局域网连接行");
+        assert!(
+            !lan.contains("<你的内网 IP>"),
+            "不得再输出字面占位符：{lan}"
+        );
+        assert!(
+            !card.lines.iter().any(|l| l.starts_with("提示：")),
+            "连接卡片不应重复注意事项：{:?}",
+            card.lines
+        );
     }
 }
 

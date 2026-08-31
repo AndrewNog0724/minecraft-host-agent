@@ -673,7 +673,33 @@ fn normalize_draft(value: serde_json::Value) -> Result<serde_json::Value, String
             }
         }
     }
+    // ⑤ 占位 spec_id 视为未填（v0.12.3 实测 A3）：模型会交回 "draft"/"draft_001"
+    // 这类占位符，导致档案名与服务器 MOTD 都变成 "draft_001"——剥掉后由
+    // 决策树按内容语义化生成（如 spigot-6p）。
+    if let Some(partial) = value.get_mut("partial")
+        && let Some(obj) = partial.as_object_mut()
+        && let Some(serde_json::Value::String(id)) = obj.get("spec_id")
+        && is_placeholder_spec_id(id)
+    {
+        obj.remove("spec_id");
+    }
     Ok(value)
+}
+
+/// 占位 spec_id 判定：空、draft/test/spec/sample/placeholder 前缀（忽略
+/// 大小写与非字母数字）都视为占位。真实语义名（如 twilightforest-5p）不受影响。
+fn is_placeholder_spec_id(id: &str) -> bool {
+    let norm: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    norm.is_empty()
+        || norm.starts_with("draft")
+        || norm.starts_with("test")
+        || norm.starts_with("spec")
+        || norm.starts_with("sample")
+        || norm.starts_with("placeholder")
 }
 
 #[cfg(test)]
@@ -848,6 +874,30 @@ mod tests {
         let norm = normalize_draft(v).unwrap();
         assert_eq!(norm["questions"][0]["text"], json!("跨网络吗？"));
         assert_eq!(norm["questions"][0]["options"], json!([]));
+    }
+
+    /// v0.12.3 实测（A3）：模型把占位符当 spec_id 交卷 → 档案名与服务器
+    /// MOTD 都变成 "draft_001"。规整时必须剥掉，交给决策树语义化生成。
+    #[test]
+    fn 占位spec_id剥离() {
+        for id in ["draft", "draft_001", "Draft-1", "test", "spec_001", ""] {
+            let v = json!({
+                "partial": {"spec_id": id, "mc_version": "26.2"},
+                "questions": []
+            });
+            let norm = normalize_draft(v).unwrap();
+            assert!(
+                norm["partial"].get("spec_id").is_none(),
+                "占位符 {id:?} 应被剥离"
+            );
+        }
+        // 真实语义名不受影响
+        let v = json!({
+            "partial": {"spec_id": "spigot-6p", "mc_version": "26.2"},
+            "questions": []
+        });
+        let norm = normalize_draft(v).unwrap();
+        assert_eq!(norm["partial"]["spec_id"], json!("spigot-6p"));
     }
 
     #[tokio::test]
