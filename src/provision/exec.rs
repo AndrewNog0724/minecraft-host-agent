@@ -365,11 +365,14 @@ fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError
         }
         AccountPolicy::Online => vec![],
     };
+    // 白名单开关必须与名单是否非空一致（v0.9.5）：
+    // 空名单 + white-list=true 会拒绝所有玩家进入
+    let whitelist_enabled = !whitelist.is_empty();
     let props = format!(
         "# by mcha\n\
          online-mode={online_mode}\n\
-         white-list=true\n\
-         enforce-whitelist=true\n\
+         white-list={whitelist_enabled}\n\
+         enforce-whitelist={whitelist_enabled}\n\
          server-port={port}\n\
          max-players={players}\n\
          motd={spec_id}\n\

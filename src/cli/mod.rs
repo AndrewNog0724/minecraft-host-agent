@@ -166,9 +166,12 @@ async fn cmd_new(
         deps.known_releases().await.unwrap_or_default()
     };
     let mut merged = draft.partial.clone();
+    // 累积回答表：每轮传给决策树（v0.9.5 修复——此前恒传空表，
+    // 白名单等未落入 PartialSpec 的回答被静默丢弃，导致重复追问直至超轮）
+    let mut answered = Answers::new();
     let mut spec: Option<ServerSpec> = None;
     for _round in 0..3 {
-        match derive_spec(&merged, &Answers::new(), &kb, Some(&releases)) {
+        match derive_spec(&merged, &answered, &kb, Some(&releases)) {
             TreeOutput::Complete(s) => {
                 spec = Some(*s);
                 break;
@@ -179,6 +182,7 @@ async fn cmd_new(
                     bail!("缺少必要信息，已退出");
                 }
                 merge_answers(&mut merged, &answers);
+                answered.extend(answers);
             }
         }
     }
@@ -259,9 +263,11 @@ fn ask_questions(questions: &[Question]) -> anyhow::Result<Answers> {
             let input: String = tokio::task::block_in_place(|| {
                 Input::new()
                     .with_prompt(&q.text)
+                    .allow_empty(q.allow_empty)
                     .interact()
                     .context("读取输入失败")
             })?;
+            // 空回答同样记入：决策树以"键存在"识别用户已明确表态跳过
             answers.insert(q.topic.clone(), input);
         } else {
             let labels = friendly_options(&q.topic, &q.options);
@@ -286,7 +292,7 @@ fn friendly_options(topic: &str, options: &[String]) -> Vec<String> {
             .iter()
             .map(|o| match o.as_str() {
                 "online" => "online — 全正版".to_string(),
-                "offline" => "offline — 全离线（开启白名单）".to_string(),
+                "offline" => "offline — 全离线（建议白名单，可跳过）".to_string(),
                 "hybrid" => "hybrid — 混合（需认证方案）".to_string(),
                 other => other.to_string(),
             })
@@ -457,17 +463,27 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
         let deps = AgentDeps::new(kb.clone(), cfg.clone())?;
         deps.known_releases().await.unwrap_or_default()
     };
-    let mut spec = loop {
-        match derive_spec(&partial, &Answers::new(), &kb, Some(&releases)) {
-            TreeOutput::Complete(s) => break *s,
+    // 同 cmd_new（v0.9.5）：累积回答表逐轮传入，并加 3 轮上限（原为无限循环）
+    let mut answered = Answers::new();
+    let mut resolved: Option<ServerSpec> = None;
+    for _round in 0..3 {
+        match derive_spec(&partial, &answered, &kb, Some(&releases)) {
+            TreeOutput::Complete(s) => {
+                resolved = Some(*s);
+                break;
+            }
             TreeOutput::NeedInput { questions, .. } => {
                 let answers = ask_questions(&questions)?;
                 if answers.is_empty() {
                     bail!("缺少必要信息，已退出");
                 }
                 merge_answers(&mut partial, &answers);
+                answered.extend(answers);
             }
         }
+    }
+    let Some(mut spec) = resolved else {
+        bail!("澄清超过 3 轮仍未齐备，请重试");
     };
 
     print_spec_summary(&spec);

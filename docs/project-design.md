@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **版本**：v0.9.4（活文档，持续迭代）
+- **版本**：v0.9.5（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -122,7 +122,7 @@
 
 ```text
 账号类型 ── 全正版 → online-mode=true
-         ├─ 全离线 → online-mode=false + 白名单必选 + 风险提示
+         ├─ 全离线 → online-mode=false + 白名单建议（可跳过，v0.9.5）+ 风险提示
          └─ 混合   → online-mode=false + 认证方案（Paper: 登录插件 / Fabric: EasyAuth）
                       + 正版玩家影响说明
 服务端类型 ── 原版（无 mod 需求）
@@ -503,7 +503,7 @@ enum JavaRuntime {
 - 下载安全：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。
 - 执行安全：危险动作清单（防火墙、删除、公网暴露、系统 PATH 修改）默认需确认；`--yes` 仅限 CI / 演示并留痕。Java 供给只写受管目录，不触碰上述任何项。
 - 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
-- 离线模式：风险说明与缓解（白名单必选）是决策树节点，非 LLM 自由发挥。
+- 离线模式：风险说明与缓解是决策树节点，非 LLM 自由发挥。白名单为**建议项**（v0.9.5 勘误：原设计强制必选，实测澄清循环中回答被 CLI 层丢弃导致重复追问直至超轮退出，且局域网场景强制白名单过重）：追问一次，用户可留空跳过；明确跳过后写入 `white-list=false` 正常开服，提供 ID 则写入名单并开启 `white-list` / `enforce-whitelist`——两个开关必须与名单是否非空一致，禁止出现"空白名单 + white-list=true"锁死服务器的组合。
 - 上游韧性（v0.9）：**生态时滞**——mod 对新版本构建滞后属常态（26.2 发布时暮色森林系项目仅支持 1.21.1），`resolve_mod` 必须把"mod 存在但无此版本构建"语义化为 `NoCompatibleVersion` 并附该 mod 当前最高支持版本，禁止报成"请求失败"；**API 行为变更**——Modrinth 对"过滤无结果"实测出现过 200 空数组（稳定形态）与 404 空体（间歇形态）两种返回，代码对两者统一语义化；路由与响应形状变化纳入上游勘误纪律（§14.1 同类）。
 
 ## 13. 测试与验收策略
@@ -615,3 +615,4 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-30 | v0.9.3 | 依据 session-backups 实测现场修复三类缺陷（D16 增补）：① `partial` 字段字符串化——`normalize_draft` 下探解包（内层坏 JSON 报可执行错误）；② questions 键名 `question`→规范名 `text` 的确定性别名 + L4 提示词补正确形状示例；③ 事件总线"先发后订"缺陷——TaskStarted 在泵订阅前发布导致 trace 永不落盘，改为调用方先 `subscribe` 再 `spawn`/`publish`（cmd_new/cmd_plan 同修）；LLM 级失败/取消路径也落盘对话（messages.json 对所有退出路径可用） |
 | 2026-08-30 | v0.9.4 | R6 展示勘误："本次费用"进度条此前误用终身账本（`read_usage()` 全量求和，跨运行递增）；改为事件泵内本地累计本次运行费用，终身账本仅保留给 `mcha usage` 总账命令，两套口径分离 |
 | 2026-08-30 | v0.8 | 正式定名（决议 D15）：Minecraft Host Agent / MCHA / mcha 全局统一——包名 `minecraft-host-agent`、CLI `mcha`、数据目录 `~/.mcha/`、环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE` 及全部用户可见字符串与文档；技术概念 "Agent" 除外 |
+| 2026-08-31 | v0.9.5 | 实测缺陷修复（澄清循环）：① CLI 层每轮传空回答表且 `merge_answers` 缺 whitelist 分支，用户白名单输入被静默丢弃 → 决策树反复追问直至 3 轮超限退出（`mcha plan` 为无限循环）；修复为循环外累积 Answers 并逐轮传入 `derive_spec`，`cmd_plan` 补 3 轮上限。② 白名单从"强制必选"改为"建议可选"（Question 新增 `allow_empty`），明确跳过 → `white-list=false`；`exec.rs` 两个白名单开关按名单是否非空写入，消除"空白名单 + white-list=true 锁死服务器"隐患；ID 分隔符移除空格 |

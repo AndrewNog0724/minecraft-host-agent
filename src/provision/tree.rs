@@ -172,31 +172,38 @@ fn apply_account(
             topic: "account_kind".into(),
             text: "朋友们用什么账号玩？(1) 全正版 (2) 全离线/盗版 (3) 混合".into(),
             options: vec!["online".into(), "offline".into(), "hybrid".into()],
+            allow_empty: false,
         });
         return;
     };
 
-    // offline-mode 必须有白名单（决策树硬性分支），缺失则追问
+    // offline-mode 下白名单是防陌生人的建议项（v0.9.5 由必选改为可选）：
+    // 未回答过才追问；空回答表示用户明确跳过，尊重其选择不再追问。
+    // 两个状态用 "whitelist" 键是否存在于 answers 区分。
+    let whitelist_answered = answers.contains_key("whitelist");
     let needs_whitelist = matches!(
         &inferred,
         AccountPolicy::Offline { whitelist } | AccountPolicy::Hybrid { whitelist, .. }
             if whitelist.is_empty()
-    );
+    ) && !whitelist_answered;
     if needs_whitelist {
         questions.push(Question {
             topic: "whitelist".into(),
-            text: "请提供离线玩家的游戏 ID（逗号分隔），将设置白名单".into(),
+            text: "离线模式下任何人可用任意 ID 进入，建议设置白名单。请提供玩家游戏 ID（逗号分隔，回车跳过）".into(),
             options: vec![],
+            allow_empty: true,
         });
     }
     spec.account = inferred;
 }
 
+/// 解析白名单回答：半角/全角逗号分隔（空格是 ID 的合法字符，不拆分）。
+/// 空回答 → 空名单（用户明确跳过）。
 fn whitelist_from(answers: &Answers) -> Vec<String> {
     answers
         .get("whitelist")
         .map(|s| {
-            s.split([',', '，', ' '])
+            s.split([',', '，'])
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from)
@@ -256,6 +263,7 @@ fn apply_software(
             topic: "software".into(),
             text: "服务端类型？(1) 原版 vanilla (2) Paper 插件服 (3) Fabric mod 服".into(),
             options: vec!["vanilla".into(), "paper".into(), "fabric".into()],
+            allow_empty: false,
         }),
     }
 }
@@ -276,6 +284,7 @@ fn apply_mc_version(
             topic: "mc_version".into(),
             text: "要玩哪个 MC 版本？".into(),
             options: latest_release_options(known_releases),
+            allow_empty: false,
         });
         return;
     };
@@ -288,6 +297,7 @@ fn apply_mc_version(
                 topic: "mc_version".into(),
                 text: format!("版本号 {requested:?} 不是有效的 MC 正式版本号，请从列表选择"),
                 options: latest_release_options(known_releases),
+                allow_empty: false,
             });
         }
         Ok(parsed) => {
@@ -307,6 +317,7 @@ fn apply_mc_version(
                     topic: "mc_version".into(),
                     text: format!("版本 {requested} 不存在于 Mojang 官方清单，请从相近版本中选择"),
                     options: suggestions,
+                    allow_empty: false,
                 });
                 return;
             }
@@ -375,6 +386,7 @@ fn apply_network(
             topic: "cross_network".into(),
             text: "朋友是否跨网络联机（不在同一个局域网/WiFi）？".into(),
             options: vec!["yes".into(), "no".into()],
+            allow_empty: false,
         }),
     }
 }
@@ -482,17 +494,39 @@ mod tests {
     }
 
     #[test]
-    fn 全离线必须白名单() {
+    fn 全离线建议白名单且追问可跳过() {
         let draft = PartialSpec {
             account_kind: Some("offline".into()),
+            software: Some("vanilla".into()),
             mc_version: Some("1.20.4".into()),
             cross_network: Some(false),
             ..Default::default()
         };
+        // 未回答过白名单 → 追问一次，且必须允许留空跳过
         let out = derive_spec(&draft, &Answers::new(), &kb(), Some(&releases()));
         let TreeOutput::NeedInput { questions, .. } = out else {
             panic!("缺白名单应追问");
         };
-        assert!(questions.iter().any(|q| q.topic == "whitelist"));
+        let q = questions
+            .iter()
+            .find(|q| q.topic == "whitelist")
+            .expect("应追问白名单");
+        assert!(q.allow_empty, "白名单是建议项，必须允许跳过");
+
+        // 空回答 = 明确跳过 → 正常收敛，白名单为空，但风险提示必须保留
+        let mut answers = Answers::new();
+        answers.insert("whitelist".into(), String::new());
+        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()));
+        let TreeOutput::Complete(spec) = out else {
+            panic!("跳过白名单后应收敛，不得再追问");
+        };
+        assert!(matches!(
+            spec.account,
+            AccountPolicy::Offline { whitelist } if whitelist.is_empty()
+        ));
+        assert!(
+            !spec.notes.is_empty(),
+            "离线模式风险提示必须进 notes（FR-17）"
+        );
     }
 }

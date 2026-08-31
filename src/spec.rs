@@ -45,7 +45,7 @@ pub struct ServerSpec {
 pub enum AccountPolicy {
     /// 全正版：online-mode=true
     Online,
-    /// 全离线：online-mode=false + 白名单必选
+    /// 全离线：online-mode=false + 白名单建议（可跳过，v0.9.5）
     Offline { whitelist: Vec<String> },
     /// 混合：online-mode=false + 认证方案
     Hybrid {
@@ -187,6 +187,10 @@ pub struct Question {
     pub text: String,
     /// 可选项（空表示自由文本输入）
     pub options: Vec<String>,
+    /// 允许留空（回车跳过）。空回答同样记入 Answers，
+    /// 表示"用户已明确表态跳过"，决策树不得再就此追问（v0.9.5）
+    #[serde(default)]
+    pub allow_empty: bool,
 }
 
 /// 需求理解环的产出：部分方案 + 待澄清问题。
