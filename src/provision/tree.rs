@@ -131,6 +131,24 @@ fn slugify(s: &str) -> String {
     }
 }
 
+/// 账号类回答语义归一化（决议 D20，v0.10.1 实测勘误）：
+/// LLM 可能生成英文/描述性选项（如 "All offline (cracked)"），此前精确匹配
+/// `"offline"/"离线"` 失败后**静默默认 Online**——离线玩家进服报"无效会话"。
+/// 按关键词归一化，顺序即优先级：混合选项（如 "Mixed (some premium, some offline)"）
+/// 同时含多个关键词，必须先判 hybrid。
+fn classify_account_kind(kind: &str) -> Option<&'static str> {
+    let lower = kind.to_lowercase();
+    if lower.contains("hybrid") || lower.contains("mix") || kind.contains("混合") {
+        Some("hybrid")
+    } else if lower.contains("offline") || lower.contains("crack") || kind.contains("离线") {
+        Some("offline")
+    } else if lower.contains("online") || lower.contains("premium") || kind.contains("正版") {
+        Some("online")
+    } else {
+        None
+    }
+}
+
 fn apply_account(
     spec: &mut ServerSpec,
     draft: &PartialSpec,
@@ -144,31 +162,37 @@ fn apply_account(
         .cloned()
         .or_else(|| draft.account_kind.clone());
 
-    let inferred = if let Some(kind) = kind {
-        match kind.as_str() {
-            "online" | "online_mode" | "正版" => AccountPolicy::Online,
-            "offline" | "离线" => AccountPolicy::Offline {
-                whitelist: whitelist_from(answers),
-            },
-            "hybrid" | "混合" => AccountPolicy::Hybrid {
-                auth: HybridAuth::Plugin, // 服务端类型确定后修正（见 apply_software 之后）
-                whitelist: whitelist_from(answers),
-            },
-            _ => AccountPolicy::Online,
-        }
-    } else if online > 0 && offline > 0 {
-        AccountPolicy::Hybrid {
-            auth: HybridAuth::Plugin,
+    // ① 归一化后的显式表态（用户回答或模型转述，决议 D20）
+    let explicit = kind.as_deref().and_then(classify_account_kind);
+    // ② 归一化失败不静默默认（D20）：有玩家人数线索按人数推断
+    let inferred = match explicit {
+        Some("online") => Some(AccountPolicy::Online),
+        Some("offline") => Some(AccountPolicy::Offline {
             whitelist: whitelist_from(answers),
-        }
-    } else if offline > 0 {
-        AccountPolicy::Offline {
+        }),
+        Some("hybrid") => Some(AccountPolicy::Hybrid {
+            auth: HybridAuth::Plugin, // 服务端类型确定后修正（见 apply_software 之后）
             whitelist: whitelist_from(answers),
+        }),
+        _ => {
+            if online > 0 && offline > 0 {
+                Some(AccountPolicy::Hybrid {
+                    auth: HybridAuth::Plugin,
+                    whitelist: whitelist_from(answers),
+                })
+            } else if offline > 0 {
+                Some(AccountPolicy::Offline {
+                    whitelist: whitelist_from(answers),
+                })
+            } else if online > 0 {
+                Some(AccountPolicy::Online)
+            } else {
+                None
+            }
         }
-    } else if online > 0 {
-        AccountPolicy::Online
-    } else {
-        // 无法判断 → 追问
+    };
+    let Some(inferred) = inferred else {
+        // ③ 无任何线索 → 追问；绝不在用户未确认时开启正版验证（D20）
         questions.push(Question {
             topic: "account_kind".into(),
             text: "朋友们用什么账号玩？(1) 全正版 (2) 全离线/盗版 (3) 混合".into(),
@@ -604,6 +628,46 @@ mod tests {
         assert!(
             !spec.notes.is_empty(),
             "离线模式风险提示必须进 notes（FR-17）"
+        );
+    }
+
+    /// v0.10.1 实测回归（决议 D20）：LLM 交卷的英文选项此前被精确匹配拒收后
+    /// **静默默认 Online**，离线玩家进服报"无效会话"。归一化后必须落到离线。
+    #[test]
+    fn 账号英文选项归一化_离线不得误判为正版() {
+        assert_eq!(
+            classify_account_kind("All offline (cracked)"),
+            Some("offline")
+        );
+        assert_eq!(
+            classify_account_kind("All premium (online mode)"),
+            Some("online")
+        );
+        assert_eq!(
+            classify_account_kind("Mixed (some premium, some offline)"),
+            Some("hybrid"),
+            "混合选项同时含 premium/offline 关键词，必须先判 hybrid"
+        );
+        assert_eq!(classify_account_kind("全离线"), Some("offline"));
+        assert_eq!(classify_account_kind("不知道"), None);
+
+        // 端到端：实测载荷形态（英文离线选项）→ 离线策略 + 白名单追问
+        let draft = PartialSpec {
+            account_kind: Some("All offline (cracked)".into()),
+            software: Some("vanilla".into()),
+            mc_version: Some("1.20.4".into()),
+            cross_network: Some(false),
+            ..Default::default()
+        };
+        let mut answers = Answers::new();
+        answers.insert("whitelist".into(), String::new());
+        let out = derive_spec(&draft, &answers, &kb(), Some(&releases()));
+        let TreeOutput::Complete(spec) = out else {
+            panic!("应收敛");
+        };
+        assert!(
+            matches!(spec.account, AccountPolicy::Offline { .. }),
+            "英文离线选项不得被静默判为正版验证（无效会话根因）"
         );
     }
 }

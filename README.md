@@ -99,7 +99,7 @@ cargo run --release -- config set model.thinking true  # 思考模式（视模�
 cargo run --release -- config set workspace.path D:\mc-servers  # 服务端安装根目录（FR-19）
 ```
 
-**工作区**（FR-19）：服务端安装位置在开服流程中会**交互询问**（默认当前目录，并显示来源注记）；也可预设，优先级为**开服时交互输入** > 环境变量 `MCHA_WORKSPACE` > `config.toml [workspace] path` > 默认当前目录。支持 `~` 展开（Windows 为用户主目录）与相对路径。开服档案元数据始终存于数据目录；Java 运行时始终装在数据目录受管位置，不污染系统。
+**工作区**（FR-19）：服务端安装位置在开服流程中会**交互询问**（默认当前目录，并显示来源注记）；也可预设，优先级为**开服时交互输入** > 环境变量 `MCHA_WORKSPACE` > `config.toml [workspace] path` > 默认当前目录。支持 `~` 展开（Windows 为用户主目录）与相对路径。**服务端文件（eula.txt / server.properties / world / mcha-launch.log 等）直接落在该目录**，不再有子目录层级；若目标目录已有服务器文件会要求确认，防止混用。开服档案元数据始终存于数据目录；Java 运行时始终装在数据目录受管位置，不污染系统。
 
 国内网络建议启用 Adoptium 镜像（`[network]` 节，模板内有现成注释行）：
 

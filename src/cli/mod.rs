@@ -203,6 +203,7 @@ async fn cmd_new(
     } else {
         std::env::current_dir()?.join(install_dir)
     };
+    confirm_existing_server(&install_dir, yes)?;
     println!("安装位置：{}", install_dir.display());
     let confirmed = yes
         || tokio::task::block_in_place(|| {
@@ -297,6 +298,47 @@ fn ask_workspace_dir(cfg: &AppConfig) -> anyhow::Result<String> {
         .interact_text()
         .context("读取输入失败")?;
     Ok(input.trim().to_string())
+}
+
+/// v0.10.2 目录彻底拍平后的防误混拦截：目标目录里已有服务器文件痕迹时，
+/// 交互模式要求确认，`--yes`（演示/CI）直接拒绝，绝不静默覆盖用户目录。
+fn confirm_existing_server(install_dir: &Path, yes: bool) -> anyhow::Result<()> {
+    const MARKERS: [&str; 5] = [
+        "eula.txt",
+        "server.properties",
+        "server.jar",
+        "world",
+        "mods",
+    ];
+    let hits: Vec<&str> = MARKERS
+        .iter()
+        .filter(|m| install_dir.join(m).exists())
+        .copied()
+        .collect();
+    if hits.is_empty() {
+        return Ok(());
+    }
+    let note = format!(
+        "{} 已包含服务器文件（{}）",
+        install_dir.display(),
+        hits.join("、")
+    );
+    if yes {
+        bail!("{note}；--yes 模式不覆盖，请换一个安装目录");
+    }
+    let ok = tokio::task::block_in_place(|| {
+        Confirm::new()
+            .with_prompt(format!(
+                "{note}，继续会混用/覆盖这些文件。确认在此目录开服？"
+            ))
+            .default(false)
+            .interact()
+            .context("读取确认失败")
+    })?;
+    if !ok {
+        bail!("已取消：请换一个安装目录");
+    }
+    Ok(())
 }
 
 /// 澄清问答：把 Question 渲染为交互控件，产出 Answers。
@@ -414,10 +456,10 @@ fn print_spec_summary(spec: &ServerSpec) {
     println!(
         "账号：{}",
         match &spec.account {
-            crate::spec::AccountPolicy::Online => "全正版".to_string(),
-            crate::spec::AccountPolicy::Offline { whitelist } => {
-                format!("全离线（白名单 {} 人）", whitelist.len())
-            }
+            crate::spec::AccountPolicy::Online =>
+                "全正版（开启正版验证；离线/第三方启动器进服会提示「无效会话」）".to_string(),
+            crate::spec::AccountPolicy::Offline { whitelist } =>
+                format!("全离线（关闭正版验证，白名单 {} 人）", whitelist.len()),
             crate::spec::AccountPolicy::Hybrid { auth, whitelist } => format!(
                 "混合（{}，白名单 {} 人）",
                 match auth {
@@ -539,6 +581,7 @@ async fn cmd_plan(cancel: CancellationToken, bus: EventBus) -> anyhow::Result<()
     } else {
         std::env::current_dir()?.join(install_dir)
     };
+    confirm_existing_server(&install_dir, false)?;
     println!("安装位置：{}", install_dir.display());
     if !tokio::task::block_in_place(|| {
         Confirm::new()

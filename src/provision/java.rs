@@ -96,14 +96,29 @@ fn managed_root(data_dir: &Path, major: u8) -> PathBuf {
 }
 
 /// 在受管目录里找可复用的 java：返回 (java 可执行绝对路径, 版本目录名)。
+/// v0.10.1 勘误：Adoptium 压缩包自带顶层目录（如 `jdk-21.0.12.1+1-jre/`），
+/// 解压后实为 `<release>/<release>-jre/bin/java` 双层嵌套——此前只查一层，
+/// 永远找不到已装的 JRE，导致每个任务都重复下载。此处按两层探测。
 fn find_managed_java(data_dir: &Path, major: u8) -> Option<(PathBuf, String)> {
     let root = managed_root(data_dir, major);
     let entries = std::fs::read_dir(&root).ok()?;
     for entry in entries.flatten() {
-        let candidate = entry.path().join(java_bin_relative());
-        if candidate.is_file() {
+        let dir = entry.path();
+        let bin = java_bin_relative();
+        // 形态一：直接 <release>/bin/java
+        if dir.join(bin).is_file() {
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            return Some((candidate, dir_name));
+            return Some((dir.join(bin), dir_name));
+        }
+        // 形态二：压缩包自带顶层目录 → <release>/<inner>/bin/java
+        if let Ok(nested) = std::fs::read_dir(&dir) {
+            for inner in nested.flatten() {
+                let candidate = inner.path().join(bin);
+                if candidate.is_file() {
+                    let dir_name = entry.file_name().to_string_lossy().to_string();
+                    return Some((candidate, dir_name));
+                }
+            }
         }
     }
     None
@@ -394,6 +409,31 @@ mod integration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.10.1 勘误回归：双层嵌套（Adoptium zip 自带顶层目录）的受管 JRE
+    /// 必须能被复用查找命中——此前只查一层，导致每个任务重复下载。
+    #[test]
+    fn 受管java复用_双层嵌套与直接形态() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("runtime").join("jdk-21");
+
+        // 形态一：直接 <release>/bin/java（tar.gz 解压或修正后的落盘布局）
+        let direct = root.join("a-release");
+        std::fs::create_dir_all(direct.join("bin")).unwrap();
+        std::fs::write(direct.join("bin").join("java"), b"").unwrap();
+        let (path, name) = find_managed_java(tmp.path(), 21).unwrap();
+        assert_eq!(name, "a-release");
+        assert!(path.ends_with("a-release/bin/java"));
+
+        // 形态二：双层嵌套 <release>/<release>-jre/bin/java（实测现场布局）
+        std::fs::remove_dir_all(direct).unwrap();
+        let nested = root.join("b-release").join("b-release-jre");
+        std::fs::create_dir_all(nested.join("bin")).unwrap();
+        std::fs::write(nested.join("bin").join("java"), b"").unwrap();
+        let (path, name) = find_managed_java(tmp.path(), 21).unwrap();
+        assert_eq!(name, "b-release");
+        assert!(path.ends_with("b-release-jre/bin/java"));
+    }
 
     #[test]
     fn java版本解析() {

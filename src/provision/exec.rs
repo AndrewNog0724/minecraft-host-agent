@@ -63,15 +63,16 @@ impl DeployContext {
         })
     }
 
-    /// 服务端安装目录（FR-19，决议 D11）：`<工作区>/<spec_id>/server`。
-    /// 工作区解析（env > config > 默认数据目录）与可写性校验由 config 负责；
+    /// 服务端安装目录（FR-19，决议 D11/D18，v0.10.2 彻底拍平）：
+    /// 就是你指定的目录本身——工作区根目录，不再有 `<spec_id>/` 子目录
+    /// （spec_id 仅用于档案命名与 motd）。同一目录跑第二个服前会有
+    /// 已有文件确认拦截（cli 层），多服靠选不同目录隔离。
+    /// 工作区解析（env > config > 默认当前目录）与可写性校验由 config 负责；
     /// 档案元数据 spec.json 仍统一存数据目录（store::save_profile），互不影响。
-    fn server_dir(&self, spec: &ServerSpec) -> Result<PathBuf, DeployError> {
-        let root = self
-            .cfg
+    fn server_dir(&self) -> Result<PathBuf, DeployError> {
+        self.cfg
             .workspace_dir()
-            .map_err(|e| DeployError::Preflight(e.to_string()))?;
-        Ok(root.join(&spec.spec_id).join("server"))
+            .map_err(|e| DeployError::Preflight(e.to_string()))
     }
 }
 
@@ -151,7 +152,7 @@ async fn deploy_inner(
 
     // 服务端目录提前解析（FR-19/D18）：工作区不可写应在下载前失败，
     // 且安装位置必须显式可见（用户不再需要猜文件装到哪了）
-    let server_dir = ctx.server_dir(spec)?;
+    let server_dir = ctx.server_dir()?;
 
     step_begin(ctx, task_id, "preflight", "环境复检", track);
     preflight(spec, ctx, task_id, &server_dir).await?;
@@ -196,11 +197,12 @@ async fn deploy_inner(
     )
     .await?;
     let java_detail = match &java_runtime {
-        crate::spec::JavaRuntime::System { version, .. } => {
-            format!("使用系统 Java {version}")
+        crate::spec::JavaRuntime::System { path, version } => {
+            format!("使用系统 Java {version}（{path}）")
         }
-        crate::spec::JavaRuntime::Managed { version, .. } => {
-            format!("受管 JRE 就绪：{version}")
+        crate::spec::JavaRuntime::Managed { path, version, .. } => {
+            // 决议 D19 ⑧：安装位置必须显式可见（实测用户问"Java 装哪了"）
+            format!("受管 JRE {version} 已就绪：{path}")
         }
         crate::spec::JavaRuntime::Pending => "Java 运行时未就绪".into(),
     };
@@ -211,7 +213,14 @@ async fn deploy_inner(
     step_begin(ctx, task_id, "download", "获取服务端", track);
     let jar_item = server_jar_item(spec, ctx).await?;
     let jar_path = download(ctx, task_id, "download", &jar_item, &server_dir).await?;
-    step_done(ctx, task_id, true, Some(jar_item.file_name.clone()), track);
+    // 决议 D19 ⑨：来源 URL 显式可见并入轨迹（实测用户问"服务端哪来的"）
+    step_done(
+        ctx,
+        task_id,
+        true,
+        Some(format!("{}（来源：{}）", jar_item.file_name, jar_item.url)),
+        track,
+    );
 
     // mod 解析与下载（Fabric；依赖闭包在 knowledge 层展开）
     if let ServerSoftware::Fabric { .. } = &spec.software
@@ -514,11 +523,15 @@ fn write_configs(spec: &ServerSpec, server_dir: &Path) -> Result<(), DeployError
     }
 
     // 跨网络指引落盘（P1 穿透编排交付前的可用指引，FR-07/FR-08 过渡）
+    // v0.10.1 目录拍平后与服务器文件同层
     if let NetworkPlan::Direct { firewall_hint } = &spec.network {
-        std::fs::write(server_dir.parent().unwrap_or(server_dir).join("connection-hint.txt"), format!(
-            "跨网络联机指引：\n1. {firewall_hint}\n2. 把你的公网 IP 告诉朋友，连接地址：<公网IP>:{}\n3. 无公网 IP 时，请等待樱花frp 穿透编排功能（P1）\n",
-            spec.port
-        ))
+        std::fs::write(
+            server_dir.join("connection-hint.txt"),
+            format!(
+                "跨网络联机指引：\n1. {firewall_hint}\n2. 把你的公网 IP 告诉朋友，连接地址：<公网IP>:{}\n3. 无公网 IP 时，请等待樱花frp 穿透编排功能（P1）\n",
+                spec.port
+            ),
+        )
         .map_err(|e| DeployError::Io(format!("写 connection-hint.txt：{e}")))?;
     }
     Ok(())

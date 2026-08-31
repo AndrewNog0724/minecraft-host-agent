@@ -398,7 +398,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 ### 8.7 store / config / ui
 
 - `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。**仓库会话备份**（v0.9.2 调试设施）：`SessionBackup` 把任务轨迹 / 对话原文 / 事件流镜像到 `<仓库>/session-backups/<task_id>/`（`MCHA_BACKUP_DIR` 可改向），随任务实时写入、失败只 warn；与数据目录 `sessions/`、仓库既有 `sessions/`（基线实验材料）互不影响，临时入库便于协作排障，问题定位后移除。
-- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；`[workspace]` 段（FR-19，**决议 D18 修订**）：服务端安装到 `<工作区>/<spec_id>/server`（档案 JSON 仍存数据目录），解析顺序 **开服流程交互输入（D18）> 环境变量 `MCHA_WORKSPACE` > config.toml > 默认当前目录**；支持 `~` 展开与相对路径，使用时校验可写。`[deploy]` 段（D19）：`ready_timeout_secs`（服务端就绪检测上限，默认 240）。
+- `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板；`[workspace]` 段（FR-19，**决议 D18/D11 v0.10.2 修订**）：服务端文件直接安装到 `<工作区>/`（拍平，spec_id 不作目录层级），解析顺序 **开服流程交互输入（D18）> 环境变量 `MCHA_WORKSPACE` > config.toml > 默认当前目录**；支持 `~` 展开与相对路径，使用时校验可写；目标目录已有服务器文件时需确认（防误混）。`[deploy]` 段（D19）：`ready_timeout_secs`（服务端就绪检测上限，默认 240）。
 - `ui`：clap 子命令（`new` / `plan` / `diag` / `profiles` / `sessions` / `config` / `usage` / `setup`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
   - **需求理解阶段全程可视化（决议 D17，v0.8 实测反馈：LLM 阶段零进度输出，构成 R4 合规缺口）**：
     - agent 循环发布进度事件：进入需求理解 `StepStarted("需求理解中…")`；每轮 `StepProgress`（"第 N 轮：正在调用 check_version_compat / search_mods…"，含工具名）；交卷成功 `StepFinished("已收到方案草案")`——部署阶段已有的 ProgressEvent 机制直接复用，渲染泵不变；
@@ -423,7 +423,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 | 包类型 | **zip 免安装包**，不用 msi/exe 安装器 | 免管理员权限、不写注册表、不改系统 PATH；删除目录即卸载，天然可回滚 |
 | 镜像类型 | 默认 **JRE**（P2 若引入需 JDK 的工具再切 JDK 包） | 服务端只需 JRE；包体约为 JDK 一半，玩家下载快 |
 | 安装路径 | `<数据目录>/runtime/jdk-<major>/<完整版本号>/`（受管目录） | 自包含、多版本可共存、绝不碰系统位置 |
-| 选择顺序 | ① 系统 PATH 已有匹配版本 → 用系统的；② 受管目录已有 → 复用；③ 下载安装 | 尊重玩家已有环境；重复开服零下载 |
+| 选择顺序 | ① 系统 PATH 已有匹配版本 → 用系统的；② 受管目录已有 → 复用；③ 下载安装（v0.10.1 勘误：Adoptium 压缩包自带顶层目录，解压后实为 `<release>/<release>-jre/bin/java` 双层嵌套，复用查找只查一层导致**每个任务都重复下载**——查找改为两层探测；每次任务仍先走 ①②，"不缺就不装"） | 尊重玩家已有环境；重复开服零下载 |
 | API | Adoptium v3：`GET /v3/assets/latest/{major}/ga?os=...&arch=...&image_type=jre` 取元数据（含 sha256）→ 下载 zip | 元数据与二进制同源，校验值可信 |
 | 架构适配 | `std::env::consts::ARCH`（x86_64 / aarch64）+ OS 探测 | Windows on ARM 等场景自动选对包 |
 | 校验 | sha256 强制校验后解压；失败删除重试一次再报错 | 与服务端 / mod 下载同一套安全管线 |
@@ -578,13 +578,14 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | D8 | LLM SDK | 不引入，自研薄客户端 |
 | D9 | 内网穿透选型 | 樱花frp 为默认（国内节点、免 VPS、朋友零安装、API v4 可全自动编排）；自建 frp / Tailscale 为 P2 备选；playit 不做 |
 | D10 | 定制内容体系 | 五层载体（代码 / 数据 / API / 指南 / Prompt，另加确定性错误模式库）；版本事实不进 Prompt；不引入 RAG / embedding（枚举型小规模事实 + 决策树路由 + 成本考量），P2 扩充案例库再评估 |
-| D11 | 工作区解析 | 服务端安装位置：`MCHA_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录。**（D18 修订：默认目录改为当前目录，并新增开服前交互询问，见 D18）** |
+| D11 | 工作区解析 | 服务端安装位置：`MCHA_WORKSPACE` 环境变量 > `config.toml [workspace] path` > 默认 `<数据目录>/profiles/`；支持 `~` 展开与相对路径；档案元数据仍统一存数据目录。**（D18 修订：默认目录改为当前目录，并新增开服前交互询问，见 D18）**。**（v0.10.2 修订：目录彻底拍平——服务端文件直接落在 `<工作区>/`，spec_id 不再参与目录布局，仅用于档案命名与 motd；多服隔离靠选择不同目录；目标目录已有服务器文件时交互确认、`--yes` 直接拒绝，防误混用户文件）** |
 | D12 | 上手引导 | 分发方式 `cargo install --path .`（装进 `~/.cargo/bin`，天然在 PATH）；`mcha setup` 向导承担首次配置 + 工作区设定 + 可选二进制自复制注册；写回配置用 `toml_edit` 保注释；不做注册表 / shell profile 改写（答辩可解释性优先） |
 | D15 | 命名规范 | 正式名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/**mcha**（标识符）；Cargo 包名 `minecraft-host-agent`，二进制/CLI 命令 `mcha`；数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`）；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`；其余内部标识（User-Agent `mcha/0.1`、JRE 暂存 `mcha-jre`、探针 `.mcha-write-probe` 等）一律用小写前缀。**边界**：作为技术概念的 "Agent"（AI Agent、agent-core 模块、`agent.rs`、`RequirementAgent` 等类型名）不属于产品命名，不改。项目未发布，旧名不做兼容别名，不迁移旧数据目录 |
 | D13 | 环境引导脚本 | 装 Rust 工具链不能由本应用二进制承担（编译前二进制不存在），由 `scripts/bootstrap-windows.ps1`（winget 装 rustup + VS Build Tools）与 `scripts/bootstrap.sh` 幂等完成；预编译二进制直发为 P2 备选 |
 | D14 | 问答必填 / 选填分层 | 向导问答两段式：必填仅 3 项（endpoint / model / API Key），其余全部归入"高级选项"（默认否，逐项带默认值与说明，回车即过）；理由：目标用户含不懂技术细节的玩家，减少首跑门槛 |
 | D18 | 工作区交互确认（v0.10 实测反馈：服务器文件静默落入数据目录深处，用户不知装到哪了） | 开服流程（`new` / `plan`）在方案确认环节**交互询问安装目录**，默认值 = **运行 mcha 的当前目录**（已设 `MCHA_WORKSPACE` / config 时显示为默认值并注明来源）；本次输入优先级最高，但不写回 config（逐次确认，显式持久化走 `config wizard`）；`--yes`（演示/CI）跳过询问、采用默认并留痕；Java 仍装受管目录（数据目录 runtime/），只有服务端文件跟随工作区 |
-| D19 | 部署执行可观测性（v0.10 实测反馈：下载完成后终端静默直至超时失败，trace 只有 LLM 步，失败原因与启动日志无处可查） | ① 执行流水线每步发布 Exec 轨迹（补齐 R5）；② 服务端 stderr 与 stdout 并读（防管道写满卡死 + 崩溃原因可见）；③ 启动日志落盘 `<server_dir>/mcha-launch.log`，失败附日志尾部；④ 就绪等待周期上报"已等待 N/上限 秒"，上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；⑤ 失败摘要写入 `events.jsonl` 与 `TaskTrace.error`；⑥ 模型文本直显扩大到伴随工具调用的轮次；⑦ 步骤完成以滚动摘要行留痕（进度条收起） |
+| D19 | 部署执行可观测性（v0.10 实测反馈：下载完成后终端静默直至超时失败，trace 只有 LLM 步，失败原因与启动日志无处可查） | ① 执行流水线每步发布 Exec 轨迹（补齐 R5）；② 服务端 stderr 与 stdout 并读（防管道写满卡死 + 崩溃原因可见）；③ 启动日志落盘 `<server_dir>/mcha-launch.log`，失败附日志尾部；④ 就绪等待周期上报"已等待 N/上限 秒"，上限 `[deploy] ready_timeout_secs` 可配置（默认 240）；⑤ 失败摘要写入 `events.jsonl` 与 `TaskTrace.error`；⑥ 模型文本直显扩大到伴随工具调用的轮次；⑦ 步骤完成以滚动摘要行留痕（进度条收起）。**（v0.10.1 补充：⑧ Java 供给收尾行显示绝对安装路径；⑨ 服务端下载收尾行显示来源 URL 并入轨迹——实测用户问"Java 装哪了""服务端哪来的"，来源必须显式可见）** |
+| D20 | 账号语义归一化（v0.10.1 实测缺陷：LLM 提供的英文选项如 "All offline (cracked)" 无法命中决策树的精确字符串匹配 `"offline"/"离线"`，**静默落入默认分支 online-mode=true**，离线玩家进服报"无效会话"） | 账号类回答按关键词归一化（hybrid/mixed/混合 > offline/crack/离线/盗版 > online/premium/正版，顺序即优先级——混合选项同时含多个关键词）；归一化失败**不静默默认**：有玩家人数线索按人数推断，仍无法判断则追问，绝不在用户未确认的情况下开启正版验证；方案摘要对验证模式给出后果提示（online：离线启动器会提示"无效会话"） |
 
 ## 16. 里程碑与风险
 
@@ -630,3 +631,5 @@ scripts/              # 环境引导（FR-18，决议 D13）：bootstrap-windows
 | 2026-08-31 | v0.9.5 | 实测缺陷修复（澄清循环）：① CLI 层每轮传空回答表且 `merge_answers` 缺 whitelist 分支，用户白名单输入被静默丢弃 → 决策树反复追问直至 3 轮超限退出（`mcha plan` 为无限循环）；修复为循环外累积 Answers 并逐轮传入 `derive_spec`，`cmd_plan` 补 3 轮上限。② 白名单从"强制必选"改为"建议可选"（Question 新增 `allow_empty`），明确跳过 → `white-list=false`；`exec.rs` 两个白名单开关按名单是否非空写入，消除"空白名单 + white-list=true 锁死服务器"隐患；ID 分隔符移除空格 |
 | 2026-08-31 | v0.9.6 | 规范版本 id 原则（§8.4，实测缺陷修复）：决策树曾把 semver 归一化结果回写 `ServerSpec.mc_version`（`26.2` → `26.2.0`），导致部署 preflight 字符串精确比对清单失败（"版本不存在，相近版本 26.2"）——自造差异、自己拒绝自己。修复三处：① `knowledge::canonicalize_version` 统一"语义比较、原文回写"；② 决策树命中清单时写清单原文 id（含 `26.2.0` 这类输入的自动校正），`CompatReport` 增 `canonical_version` 让模型直接抄官方 id；③ preflight 精确匹配失败先语义比对并自愈存量 spec（含旧档案），校正留痕，仍无匹配才报错给建议 |
 | 2026-08-31 | v0.10 | 执行可观测性与工作区确认（session-backup 实测复盘：下载完成后终端静默 4 分钟至就绪超时失败，trace 只有 LLM 步，stderr 接而不读）。决议 **D18**：开服前交互询问安装目录，默认当前目录（原为数据目录深处）；决议 **D19**：Exec 轨迹补全、stderr 并读防死锁、启动日志落盘 `mcha-launch.log` 并在失败时附尾部、就绪等待计时与 `[deploy] ready_timeout_secs` 配置、失败摘要入 events.jsonl / TaskTrace.error、模型文本直显扩大到工具调用轮次、步骤完成滚动留痕。§5.1/§8.1/§8.5/§8.7/§9 同步更新 |
+| 2026-08-31 | v0.10.1 | Windows 实测三项缺陷修复 + 两处可观测补充：① 受管 JRE 复用失效（双层嵌套）导致每次任务重复下载（§8.8 勘误）；② 账号类回答语义归一化，未识别不再静默默认 online-mode（**"无效会话"根因**，决议 D20）；③ 目录布局拍平为 `<工作区>/<spec_id>/`（D11 修订）；④ Java 收尾行显示安装路径、服务端下载显示来源 URL（D19 ⑧⑨）。§8.8/§15 同步更新 |
+| 2026-08-31 | v0.10.2 | 目录彻底拍平（用户反馈 `mc-6p` 层累赘）：服务端文件直接落在 `<工作区>/`，spec_id 不再参与目录布局（仅档案命名与 motd）；新增目标目录已有服务器文件的确认拦截（交互确认 / `--yes` 拒绝），防止静默混用用户文件（D11 修订）。§8.7 同步更新 |
