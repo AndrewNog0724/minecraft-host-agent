@@ -4,14 +4,25 @@
 
 > 仓库 `minecraft-host-agent`，正式名 **Minecraft Host Agent**，简称 **MCHA**（标识符小写 `mcha`）。命名沿用归档主线决议 D15。
 
-> **当前状态**：第一版实现主线已归档（`archive/v0.12-mvp-line`），正在 `v2` 分支回到 AI Agent 主题重新规划。简介、配置、演示等章节将随开发进度逐步补全（文中以 TODO 标注）。
+> **当前状态**：**M1 Agent 框架已交付**（Agent Loop + 通用工具集 + REPL 多轮会话 + R5/R6 骨架，设计文档 v1.7）。M2 开服场景包（领域工具 + 知识库 + Skills）待开工。下文"配置说明 / 演示用例"随 M1 可用。
 
 ## 项目简介
 
 本项目从真实的生活 / 学习 / 娱乐场景出发，针对一个通用 Agent 解决不好的具体痛点，用 Rust 设计并实现一个场景定制化的 AI Agent，其中包含**至少两项**针对该场景的专门优化或定制逻辑，使它在这个场景下明显优于通用 Agent，或能做到通用 Agent 做不到的事。
 
-- **痛点场景**：TODO（选题确定后填写）
-- **场景定制方案**：TODO（至少两项，选题确定后填写）
+- **痛点场景**：MC Java 版好友联机开服（知识分散、决策分支多、故障黑盒、内网穿透劝退，详见设计文档 §2）
+- **场景定制方案**：①开服决策指南（Skill）+ 全链路领域工具；②版本兼容知识库 + 实时校验工具（详见设计文档 §3）
+
+### M1 已实现（Agent 框架，场景无关）
+
+- **Agent Loop**（唯一执行引擎）：模型提议工具调用 → Rust 工具后端执行 → 结果回传再决策；停止条件含模型自然结束、Ctrl-C 打断、预算耗尽、轮数保险丝（默认 40）
+- **通用工具集**：`run_command` / `read_file` / `write_file` / `edit_file` / `list_dir` / `http_get_text` / `http_download`（断点续传 + sha256 校验）/ `web_search`（接口就绪，后端未内置）/ `ask_user` / `load_skill`
+- **安全边界**：文件路径收敛（工作区 + 数据目录）、危险操作确认门（y 本次 / a 本会话 / n 拒绝，级别 paranoid / standard / auto 可配）、命令超时与进程清理
+- **多轮会话 REPL**：inline 滚动流 + 语义化渲染块（工具调用 / 结果 / 进度条 / 思考块）；斜杠命令 `/exit` `/usage` `/help` `/sessions`
+- **R3 模型配置**：`mcha setup` 向导（3 项必填 + 连接测试）、`config set/list/test`
+- **R4 进度与打断**：LLM 流式直显、下载进度条、命令输出滚动；Ctrl-C 随时打断当前回合（会话保留，未完成调用回填占位保证消息流合法）
+- **R5 历史管理**：会话 = 完整消息流 JSONL 逐条落盘；`sessions list/show/export`（导出自动打码密钥与公网 IP）；`--continue` / `--resume`
+- **R6 用量统计**：每次调用（含重试与失败）强制记账，按价格表换算费用；预算硬上限超限自动中断；`usage` 全局账本
 
 作业背景与完整要求见 [`docs/`](./docs)：
 
@@ -26,17 +37,94 @@
 
 对照作业固定功能要求（R1–R6，详见 [`docs/requirements.md`](./docs/requirements.md)）的实现清单：
 
-- [ ] **R1 核心逻辑用 Rust 实现**：数据处理、算法流程、API 调用编排均在 Rust 主控流程中
-- [ ] **R2 用户交互界面**：至少提供 Web / CLI 交互式终端 / 桌面 / 移动端之一，可触发任务并展示结果
-- [ ] **R3 可自定义模型配置**：支持修改 API Endpoint、API Key、上下文长度、思考模式、API 价格等
-- [ ] **R4 实时进度渲染与打断**：超过 3 秒的任务实时渲染进度，并允许用户随时打断
-- [ ] **R5 上下文历史管理**：管理多轮对话与任务状态历史，可查看、可保存 / 加载完整会话上下文
-- [ ] **R6 Token 用量与价格统计**：精确统计每次调用的输入 / 输出 token 数并换算成本，支持预算上限与超限自动中断
+- [x] **R1 核心逻辑用 Rust 实现**：Agent Loop、工具系统与全部工具后端、自研 LLM 客户端（SSE 流式 / tool_calls 拼装 / 重试）、上下文裁剪均在 Rust 主控流程中
+- [x] **R2 用户交互界面**：CLI 交互式终端（REPL 多轮会话，可触发 Agent 任务并实时展示过程与结果）
+- [x] **R3 可自定义模型配置**：Endpoint / API Key / 上下文长度 / 思考模式 / API 价格，`setup` 向导 + `config set` + 手编 TOML
+- [x] **R4 实时进度渲染与打断**：流式输出、进度条、命令输出滚动；Ctrl-C 随时打断当前回合
+- [x] **R5 上下文历史管理**：完整消息流 JSONL 落盘，可查看 / 恢复 / 导出（自动打码）
+- [x] **R6 Token 用量与价格统计**：逐调用计量与费用换算、预算上限超限自动中断、三层展示（退出汇总 / `usage` 账本 / `sessions show` 明细）
+
+> M2 开服场景包（领域工具 / 知识库 / Skills / 场景提示词）待实现，对应"场景定制"能力的落地。
 
 ## 环境要求
 
 - Rust 1.85+（项目使用 edition 2024）
-- 其他依赖：TODO（随开发补充）
+- 任意 OpenAI 兼容 Chat API（智谱 GLM / DeepSeek / OpenAI 等）与对应 API Key
+
+## 快速上手（三步跑起来）
+
+**第 1 步：构建并安装命令**
+
+```bash
+cargo install --path .   # 编译并把 `mcha` 装到 ~/.cargo/bin（之后任意目录可用）
+```
+
+> 不想安装也可以：把下文所有 `mcha` 换成 `cargo run --release --` 即可，例如
+> `cargo run --release -- config list`。
+
+**第 2 步：首次运行，完成配置向导**
+
+```bash
+mcha
+```
+
+检测到没有配置时会自动进入向导，必填只有 3 项：
+
+1. **API 提供方**——选预设（智谱 GLM / DeepSeek / OpenAI）或填自定义 Endpoint；
+2. **模型名**——预设项有默认值，回车即可；
+3. **API Key**——隐藏输入，自动写入 `~/.mcha/.env`（权限 600，不入仓库）。
+
+完成后自动做一次**连接测试**（发一条最小对话请求，显示延迟与模型应答），成功即进入会话。
+
+> 手工方式：`mcha setup` 重跑向导；或 `mcha config set model.endpoint <地址>` 逐项配置、
+> `mcha config test` 单独测试。Key 也可以直接 `export MCHA_API_KEY=...`。
+
+**第 3 步：对话**
+
+进入会话后直接用自然语言下任务，Agent 会自己决定调用哪些工具并实时展示每一步：
+
+```text
+$ mcha
+> 列出当前目录，告诉我这个项目是做什么的
+  ⏺ list_dir(path=.)
+  ⎿ ✓ README.md  Cargo.toml  src/ …
+  这是一个 Rust 编写的 AI Agent 项目……
+
+> 把 README 里的"已知边界"一节总结成 3 句话
+  ⏺ read_file(path=README.md)
+  ⎿ ✓ （文件内容）
+  ……
+
+> /exit
+  ── 会话结束 ──
+  输入 3.2K tokens · 输出 0.9K tokens · 费用 ¥0.0210 · 用时 4 分钟
+  轨迹已保存：~/.mcha/sessions/2026-0901-1700-ab12.jsonl
+```
+
+**会话内你会用到的**：
+
+| 操作 | 效果 |
+| --- | --- |
+| 直接输入中文 | 给 Agent 下任务，它会自主多步执行 |
+| `Ctrl-C` | 打断当前回合（工具执行中也可以），会话保留 |
+| `/usage` | 看本会话累计 token 与费用 |
+| `/exit` 或 `Ctrl-D` | 退出并打印费用汇总与轨迹文件路径 |
+| `mcha --continue` | 下次接着上次会话继续聊 |
+
+**几个值得试的任务**（都是真实的多步工具调用）：
+
+```text
+> 抓取 https://www.rust-lang.org 的首页文本，存成 rust-homepage.txt，然后数一下它有多少行
+> 在工作区建一个 notes.md，写上今天的待办，再把它改成 5 行
+> 当前目录里哪个 Rust 文件最长？（提示：它可能会用 run_command 跑 wc/find）
+```
+
+**费用与安全，先知道这几点**：
+
+- 每次对话调用都计 token。退出时打印汇总；`mcha usage` 看全局账本；`mcha sessions show <id>` 看每次调用的明细。
+- 默认**只统计 token 用量**（费用记 0 并标注"仅 token 数"）；想显示费用，在 `config.toml` 的 `[[prices]]` 里填入模型单价（元/百万 token）即可。
+- 默认预算 ¥10/会话（超限自动中断）；改预算：`mcha config set budget.limit_cny 5`。
+- 默认确认级别 `standard`：Agent 要**写文件 / 执行命令 / 下载**时会先弹确认，`y` 本次允许、`a` 本会话允许此工具、`n` 拒绝（拒绝后它会自己换方案）。想全自动可设 `auto`（演示用）。
 
 ## 构建与运行
 
@@ -44,31 +132,101 @@
 # 构建
 cargo build --release
 
-# 运行
+# 首次运行：自动进入配置向导（3 项必填 + 连接测试）
 cargo run --release
 
-# 运行测试
+# 常用方式
+mcha                      # 进入交互会话（REPL）
+mcha new "列一下当前目录"  # 预填首条消息
+mcha --continue           # 接续最近会话
+mcha --resume             # 交互式选择恢复历史会话
+
+# 配置与数据
+mcha setup                # 重跑配置向导
+mcha config list          # 查看生效配置
+mcha config set budget.limit_cny 5
+mcha config test          # 连接测试
+
+# 会话与用量
+mcha sessions list        # 历史会话
+mcha sessions show <id>   # 查看完整消息流（含工具调用与结果）
+mcha sessions export <id> # 导出 JSON（自动打码）
+mcha usage                # 全局用量账本（R6）
+
+# 测试与静态检查
 cargo test
+cargo clippy --all-targets -- -D warnings
 ```
+
+会话内命令：`/exit` 退出（Ctrl-D / 提示符处 Ctrl-C 同效）、`/usage` 本会话累计、`/sessions` 列历史、`/help` 帮助。回合执行中按 Ctrl-C 打断当前操作（会话保留）。
 
 ## 配置说明
 
-TODO：说明如何配置模型 API Endpoint、API Key、上下文长度、思考模式、价格等（配置文件或设置界面），以及 Token 预算的设置方式。
+- **数据目录**：`~/.mcha/`（Windows `%APPDATA%\mcha\`；可用 `MCHA_DATA` 覆盖）。布局：`config.toml`（配置）、`.env`（仅 API Key，权限 600）、`sessions/`（会话轨迹）、`usage/`（用量账本）、`runtime/`（运行时附件）。
+- **工作区**：文件与命令工具的作用范围，默认当前目录，可用 `MCHA_WORKSPACE` 覆盖。
+- **API Key**：写在 `~/.mcha/.env` 的 `MCHA_API_KEY=...`（变量名可经 `model.api_key_env` 更改），永不写入 config.toml 与仓库。
+- **config.toml 全景**（首次 setup 自动生成，含注释）：
+
+  ```toml
+  [model]
+  endpoint = "https://open.bigmodel.cn/api/paas/v4"
+  model = "glm-5.2"
+  context_len = 128000        # 上下文长度（token），裁剪依据
+  thinking = false            # 思考模式开关
+
+  [[prices]]                  # 元 / 百万 token；无条目的模型费用记 0 并标注
+  model = "glm-5.2"
+  input_per_m = 2.0
+  output_per_m = 8.0
+
+  [budget]
+  limit_cny = 10.0            # 费用硬上限（按会话累计），超限自动中断
+
+  [safety]
+  confirm_level = "standard"  # paranoid（全部确认）| standard（写/执行/下载确认）| auto（免确认，演示用）
+
+  [search]
+  backend = ""                # 空 = 无搜索后端（web_search 返回结构化提示）
+
+  [agent]
+  max_tool_calls_per_turn = 40   # 单回合工具调用保险丝
+  command_timeout_secs = 120     # run_command 默认超时
+  large_output_bytes = 8192      # 工具结果转存附件的阈值
+  ```
+
+- **价格表（可选）**：默认只输出 token 用量，费用记 0 并标注"仅 token 数"。想换算费用时，在 `[[prices]]` 条目按官方价格页填写（元 / 百万 token）。
 
 ## 演示用例
 
-TODO：补充能体现场景定制效果的演示用例。
+- **M1 通用任务**（设计 §14 出口标准）：对 Agent 说"抓取某页面存为文件并统计行数"一类多步实事——它会依次调用 `http_get_text` → `write_file` → `run_command`，全程工具调用留痕（`sessions show` 可回放）、可 Ctrl-C 打断、退出时显示 token 与费用汇总。
+- **M2 开服场景**：待场景包交付后补充（对应基线实验 T1–T5 的对照演示）。
 
 ## 项目结构
 
 ```text
 .
-├── docs/           # 文档（课程参考资料 + 本项目选题 / 需求文档）
+├── docs/           # 文档（课程参考资料 + 本项目选题 / 设计文档）
 ├── experiments/    # 通用 Agent 基线实验（手册与运行记录）
 ├── src/            # Rust 源代码
+│   ├── agent/      # Agent Loop：消息模型、上下文裁剪、调度、确认门、停止条件
+│   ├── llm/        # 自研 OpenAI 兼容客户端：SSE、tool_calls、重试、用量
+│   ├── tools/      # 工具系统：注册表、Schema 校验、路径收敛、通用工具集
+│   ├── cli/        # REPL、语义化渲染、setup 向导、管理子命令
+│   ├── config/     # AppConfig、价格表、config set（保留注释）
+│   ├── store/      # 会话 JSONL、用量账本、导出打码
+│   ├── events.rs   # 事件总线（进度 / 用量 → 渲染块）
+│   ├── cancel.rs   # 协作式取消令牌（Ctrl-C 打断）
+│   └── assets/     # 框架 system prompt、价格预设
 ├── Cargo.toml
 └── README.md
 ```
+
+## 已知边界（M1）
+
+- 符号链接不做解析（路径收敛为词法规范化，目标平台 Windows 上风险低）
+- `run_command` 超时 / 取消时终止直接子进程，不追杀整个进程树
+- `web_search` 仅接口就绪，未内置搜索后端（决议 D103：默认如实告知）
+- 思考模式（thinking）按 GLM 系 OpenAI 兼容语义发送；思考全文不入史，仅留"已思考 Ns"占位
 
 ## 开发时间线
 

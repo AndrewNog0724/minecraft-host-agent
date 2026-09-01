@@ -480,17 +480,19 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 
 | 领域              | crate                        | 备选         | 选择理由                                               |
 | ----------------- | ---------------------------- | ------------ | ------------------------------------------------------ |
-| 异步运行时        | tokio                        | async-std    | 事实标准；CancellationToken 与进程管理（R4）依赖其生态 |
+| 异步运行时        | tokio                        | async-std    | 事实标准；取消语义与进程管理（R4）依赖其生态           |
 | HTTP 客户端       | reqwest（rustls-tls）        | ureq         | 异步流式（SSE）必需；rustls 免 Windows OpenSSL 负担    |
 | SSE 解析          | eventsource-stream           | 手写行解析   | 标准协议解析自写易错                                   |
+| Stream 组合子     | futures-util                 | —            | 驱动 reqwest / eventsource-stream 的 Stream            |
+| trait 异步方法    | async-trait                  | 手写装箱     | Tool / Interaction / LlmClient 需要 dyn 对象安全       |
 | 序列化            | serde + serde_json + toml    | —            | 事实标准；JSON 是 R5 落盘与工具参数统一格式            |
 | Schema 派生与校验 | schemars + jsonschema        | 手写校验     | 工具参数 Schema 从类型派生，响应按同一 Schema 校验     |
 | 错误处理          | thiserror + anyhow           | 手写         | 模块内显式错误枚举，main 层聚合                        |
 | CLI 框架          | clap（derive）               | argh         | 子命令与帮助完备（R2）                                 |
 | 交互问答 | dialoguer | inquire | ask_user 的选项 / 输入 / 确认控件 |
 | 终端控制 | crossterm | — | 颜色、样式与光标控制；会话界面渲染基底 |
-| Markdown 渲染 | termimad | 手写 | 方案摘要等静态块的终端 Markdown 渲染 |
 | 进度条            | indicatif                    | 手写         | 多进度条与速率显示（R4）                               |
+| 取消令牌          | 手写（AtomicBool + Notify）  | tokio-util   | 语义简单（置位 + 唤醒等待方），手写约 40 行且答辩可解释 |
 | 版本解析          | semver                       | 手写         | 拒绝非语义化输入是定制 2 第一道闸                      |
 | 哈希校验          | sha1 + sha2（RustCrypto）    | —            | Mojang sha1 / Modrinth sha1+sha512 / Adoptium sha256   |
 | 压缩解压          | zip                          | 手写         | Java 供给解压，纯 Rust                                 |
@@ -547,6 +549,7 @@ src/
 ├── knowledge/         # 知识库加载、上游 API 客户端、版本校验管线
 ├── store/             # 会话 / 档案 / 用量持久化
 ├── config/            # AppConfig、价格表、确认策略
+├── cancel.rs          # 协作式取消令牌（AtomicBool + Notify，R4 打断）
 ├── events.rs          # 事件总线（进度 / 用量 / 轨迹）
 └── assets/            # prompts/ skills/ knowledge/*.toml
 ```

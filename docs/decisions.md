@@ -61,3 +61,4 @@
 | 2026-09-01 | v1.4 | 设计细化评审：回合原子性与打断语义（D109）；确认门 y/a/n 粒度（D110）；新增 `check_plan` 部署前校验工具（D111）；LLM 客户端重试 / 思考模式 / 价格缺失细则（D112）；run_command / edit_file / web_search / ask_user 语义细化；Profile 字段草案恢复；白名单离线 UUID 实测教训留痕；终端符号降级、斜杠命令与会话恢复交互；Skills 指南以中文撰写 |
 | 2026-09-01 | v1.5 | 配置与首次启动设计补全（D113）：setup 向导（必填 3 项 + 连接测试）、配置文件全景（[model]/[[prices]]/[budget]/[safety]/[search]）、config set/list/test、启动校验；FR-05 与 §9 R3 同步 |
 | 2026-09-01 | v1.6 | 系统提示词分层澄清：框架级 system prompt（通用角色 + 工具纪律 + 安全规则）属 M1 交付，场景提示词（开服管家角色 + Skills 清单）属 M2；最终 system prompt = 框架基础段（固定）+ 场景段（注入），§8.5 L4 与 §14 同步 |
+| 2026-09-01 | v1.7 | **M1 实现期技术选型落定**（§10 表同步）：新增 async-trait（Tool / Interaction / LlmClient 的 dyn 对象安全需要）与 futures-util（Stream 驱动）；取消令牌改为手写 AtomicBool + Notify（约 40 行，答辩可解释）；termimad 移出 M1 选型（Markdown 静态块渲染属 M2 方案摘要场景，届时引入）。M1 Agent 框架实现完成：Loop + 通用工具集 + REPL + R5/R6 骨架，49 项单元 / Loop 级测试，出口标准链路经本地 mock OpenAI SSE 服务端到端验证 |
