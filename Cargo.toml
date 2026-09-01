@@ -1,6 +1,6 @@
 [package]
 name = "minecraft-host-agent"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Minecraft Host Agent（MCHA）：场景定制化 AI Agent（课程大作业）"
 
@@ -10,3 +10,64 @@ name = "mcha"
 path = "src/main.rs"
 
 [dependencies]
+# 异步运行时（设计 §10：CancellationToken 等价的取消语义与进程管理依赖其生态）
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "io-util",
+    "fs",
+    "process",
+    "signal",
+    "sync",
+] }
+# HTTP 客户端：rustls 免 Windows OpenSSL 负担；stream 支持 SSE 流式
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "stream",
+    "gzip",
+] }
+# SSE 协议解析（标准协议手写易错，见设计 §10）
+eventsource-stream = "0.2"
+# reqwest bytes_stream / eventsource-stream 均为 futures Stream，需要组合子驱动
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# trait 内 async fn + dyn 对象安全（工具与交互接口需要；零依赖方案难解释，引入此微型惯用库）
+async-trait = "0.1"
+
+# 序列化：JSON 是落盘与工具参数统一格式；toml 用于配置读写
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# config set 写回时保留注释（决议 D113）
+toml_edit = "0.22"
+
+# 工具参数 Schema：从类型派生 + 按 Schema 校验（设计 §10）
+schemars = { version = "1", features = ["derive"] }
+jsonschema = { version = "0.30", default-features = false }
+
+# 错误处理：模块内显式枚举 + main 层聚合（NFR-3）
+thiserror = "2"
+anyhow = "1"
+
+# CLI：子命令与帮助完备（R2）
+clap = { version = "4", features = ["derive"] }
+# 交互问答（ask_user 选项/输入/确认控件）
+dialoguer = "0.11"
+# 终端颜色/样式（会话界面渲染基底，D107）
+crossterm = "0.29"
+# 下载/命令进度条与 spinner（R4）
+indicatif = "0.18"
+
+# 哈希校验（http_download 可选 sha256）
+sha2 = "0.10"
+# 日志与观测：结构化分模块日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 时间戳统一 RFC3339
+chrono = { version = "0.4", features = ["serde"] }
+# 原子写与下载临时目录
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
