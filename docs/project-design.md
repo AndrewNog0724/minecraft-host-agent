@@ -1,6 +1,6 @@
 # MC 联机设施建设 Agent · 需求与设计文档
 
-- **版本**：v0.4（活文档，持续迭代）
+- **版本**：v0.4.1（活文档，持续迭代）
 - **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`
 - **与最终提交设计文档的对应**：§2 → 痛点分析；§3 → 场景定制方案；§7–§9 → 系统架构（模块划分、数据流、关键数据结构）；§10 → 技术选型。定稿时按此结构抽取整理。
 
@@ -8,7 +8,7 @@
 
 **一句话**：面向 Minecraft Java Edition 好友联机场景的"开服管家"——玩家用一句自然语言描述需求，Agent 在本机完成从方案推导、服务端部署、内网穿透到故障诊断的全流程，交付一台朋友能直接连入的服务器，并把一切配置与开销记录在案。
 
-- **产品名**：暂定 `mc-host-agent`（正式名待定）
+- **产品名**：正式定名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/**`mcha`**（标识符、命令、路径小写，决议 D15）
 - **形态**：本地运行的 Rust 单二进制，初版 CLI 交互式终端（界面形态见 §15 决议 D1）
 - **边界（只做这一件事）**：只服务"MC Java 版好友联机开服与维保"。不做通用聊天助手、不做服务器面板、不做基岩版服（跨平台见 §15 决议 D5）。
 
@@ -379,7 +379,7 @@ diagnose 通用设计：模式库为有序规则表（正则 + 关键词 + 关�
 
 ### 8.7 store / config / ui
 
-- `store`：数据目录 `~/.mc-host-agent/`（Windows 落 `%APPDATA%\mc-host-agent\`，决议 D4），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
+- `store`：数据目录 `~/.mcha/`（Windows 落 `%APPDATA%\mcha\`，决议 D4/D15），布局 `{profiles, sessions, usage, runtime}/`；单写多读；JSONL 追加日志 + 快照；导出 = 打包任务三类文件。
 - `config`：`config.toml` + `.env`（仅 API Key）；价格表**内置常见模型预设**（GLM / DeepSeek / OpenAI 等，随包分发并在文档注明来源与更新日期，决议 D3），用户可覆盖；启动校验必填项，缺项给可复制模板。
 - `ui`：clap 子命令（`new` / `diag` / `profiles` / `sessions` / `config` / `usage`）；dialoguer 交互；indicatif 多进度条；Ctrl-C 经 CancellationToken 汇入统一取消总线。
 
@@ -518,13 +518,14 @@ src/
 | D1 | 界面形态 | MVP 用 CLI/TUI；Web（只读状态页）列 P2，09-06 公开展示前评估 |
 | D2 | Java 供给 | **全自动受管安装，不降级**；设计见 §8.8 |
 | D3 | 价格表 | 内置常见模型预设随包分发，注明来源与更新日期，用户可覆盖 |
-| D4 | 数据目录 | `~/.mc-host-agent/`（Windows：`%APPDATA%\mc-host-agent\`） |
+| D4 | 数据目录 | `~/.mcha/`（Windows：`%APPDATA%\mcha\`；原名 `~/.mc-host-agent/`，D15 定名时统一更名，不迁移旧目录） |
 | D5 | 基岩跨平台 | 不做（边界外未来工作） |
 | D6 | 提案提交方式 | tool-calling（`submit_spec` 工具），不用 JSON mode |
 | D7 | Forge | MVP 不做；P2 或降级为安装指导 |
 | D8 | LLM SDK | 不引入，自研薄客户端 |
 | D9 | 内网穿透选型 | 樱花frp 为默认（国内节点、免 VPS、朋友零安装、API v4 可全自动编排）；自建 frp / Tailscale 为 P2 备选；playit 不做 |
 | D10 | 定制内容体系 | 五层载体（代码 / 数据 / API / 指南 / Prompt，另加确定性错误模式库）；版本事实不进 Prompt；不引入 RAG / embedding（枚举型小规模事实 + 决策树路由 + 成本考量），P2 扩充案例库再评估 |
+| D15 | 命名规范 | 正式名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/**`mcha`**（标识符）；Cargo 包名 `minecraft-host-agent`，二进制/CLI 命令 `mcha`；数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`）；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`；其余内部标识一律用小写 `mcha` 前缀。**边界**：作为技术概念的 "Agent"（AI Agent、agent 模块、相关类型名）不属于产品命名，不改。编号沿用归档主线（archive/v0.12-mvp-line）决议表，D11–D14 属该主线，本文档不再使用 |
 
 ## 16. 里程碑与风险
 
@@ -554,3 +555,4 @@ src/
 | 2026-08-28 | v0.2 | 合并为单一活文档；决议 D1–D8；新增 §8.8 Java 自动供给完整设计 |
 | 2026-08-28 | v0.3 | 决议 D9：樱花frp 为穿透默认方案；§8.6 重写为基于官方 API v4 OpenAPI 与 frpc 手册的全自动编排详案 |
 | 2026-08-28 | v0.4 | 新增 §8.9 定制内容分层体系（决议 D10）；工具集补 `load_guide`、仓库结构补 `assets/`、知识库小节补别名表与模式库 |
+| 2026-09-01 | v0.4.1 | 全局定名规范化（沿用归档主线决议 D15）：产品名 Minecraft Host Agent / MCHA / `mcha`，Cargo 包名 `minecraft-host-agent`，数据目录 `~/.mcha/`，环境变量 `MCHA_API_KEY`/`MCHA_DATA`/`MCHA_WORKSPACE`；§1/§8.7/§15 同步；旧实现主线归档说明见 AGENTS.md |
