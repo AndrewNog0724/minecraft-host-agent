@@ -1,0 +1,18 @@
+# 内置模型价格预设（元 / 百万 token）——决议 D3：随包分发、注明来源与采集日期、用户可覆盖。
+#
+# TODO(价格校准)：以下预设定价需要按各官方价格页人工校准后取消注释；
+# 校准前所有模型费用将记 0 并在 usage 报表标注"无价格预设，仅 token 数"（设计 §8.3）。
+# 覆盖方式：在 ~/.mcha/config.toml 中写同名 [[prices]] 条目即可覆盖预设。
+#
+# 来源：各模型官方价格页（open.bigmodel.cn / api-docs.deepseek.com / openai.com/pricing）
+# 采集日期：待人工校准时填写
+#
+# [[prices]]
+# model = "glm-5.2"
+# input_per_m = 0.0
+# output_per_m = 0.0
+#
+# [[prices]]
+# model = "deepseek-chat"
+# input_per_m = 0.0
+# output_per_m = 0.0
