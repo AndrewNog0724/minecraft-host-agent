@@ -41,7 +41,9 @@ fn mask_keys_and_ips(text: &str) -> String {
         {
             let octets: Vec<u8> = text[i..i + len]
                 .split('.')
-                .filter_map(|s| s.parse().ok())
+                // turbofish 显式标注：Windows 依赖树中的 encode_unicode 为
+                // Vec<u8> 提供了额外的 FromIterator 实现，会让推断歧义（E0283）
+                .filter_map(|s| s.parse::<u8>().ok())
                 .collect();
             if octets.len() == 4 {
                 // 私有地址（127.* / 10.* / 192.168.* / 172.16-31.*）不打码，
