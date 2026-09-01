@@ -33,9 +33,13 @@ pub enum Event {
     },
     /// 命令输出行等原样滚动内容。
     OutputLine(String),
+    /// 空行：板块间呼吸感由需要保证顺序的模块主动插入（如确认门前）。
+    Blank,
     /// 一般提示（打断、预算告警、auto 模式留痕等，暗色块）。
     Notice(String),
-    /// 一次 LLM 调用的用量入账（渲染层只累计，退出时统一汇总——决议 D108）。
+    /// 一次 LLM 调用的用量入账。D108：会话中不渲染、退出时由 REPL 汇总；
+    /// 保留 payload 供未来订阅者使用（如 M2 的会话内预算条）。
+    #[allow(dead_code)]
     UsageRecorded(UsageRecord),
 }
 

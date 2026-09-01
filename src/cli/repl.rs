@@ -139,6 +139,8 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
     }
 
     loop {
+        // 提示符前空一行：上一回合的输出块与输入区保持呼吸感
+        println!();
         print!("{}", "> ".with(Color::DarkGrey).attribute(Attribute::Bold));
         let _ = std::io::stdout().flush();
         let line = tokio::select! {
@@ -223,8 +225,8 @@ async fn run_turn(
     // 回合结束（未来已丢弃），关闭事件通道让渲染器自然收尾
     drop(tx);
     let _ = renderer.await;
-    println!();
     if end == TurnEnd::LlmFailed {
+        println!();
         println!(
             "{}",
             "回合已中断（模型调用失败），输入可重试。".with(Color::Yellow)
@@ -259,21 +261,21 @@ fn print_banner(env: &AgentEnv, session: &Session) {
             .with(Color::Cyan)
             .attribute(Attribute::Bold)
     );
-    println!(
-        "模型：{} @ {} · 上下文 {} · 预算 ¥{:.2}/会话 · 确认级别 {}",
-        env.config.model.model,
-        env.config.model.endpoint,
-        env.config.model.context_len,
-        env.config.budget.limit_cny,
-        env.config.safety.confirm_level
-    );
-    println!("工作区：{} · {resume_note}", env.workspace.display());
-    println!(
-        "工具：{} · {}",
-        env.registry.names().join(" / "),
-        "输入 /help 查看命令；Ctrl-C 打断回合；/exit 或 Ctrl-D 退出".with(Color::DarkGrey)
-    );
     println!();
+    println!(
+        "  模型：{} @ {}",
+        env.config.model.model, env.config.model.endpoint
+    );
+    println!(
+        "  上下文：{} tokens · 预算 ¥{:.2}/会话 · 确认级别 {}",
+        env.config.model.context_len, env.config.budget.limit_cny, env.config.safety.confirm_level
+    );
+    println!("  工作区：{}（{resume_note}）", env.workspace.display());
+    println!();
+    println!(
+        "{}",
+        "  /help 查看命令 · Ctrl-C 打断回合 · /exit 或 Ctrl-D 退出".with(Color::DarkGrey)
+    );
 }
 
 fn print_help() {
@@ -288,6 +290,7 @@ fn print_help() {
 fn print_exit_summary(env: &AgentEnv, session: &Session, started: Instant) {
     // D108：退出时一次性汇总（会话过程中不刷用量行）
     let minutes = started.elapsed().as_secs_f64() / 60.0;
+    println!();
     println!("{}", "── 会话结束 ──".with(Color::DarkGrey));
     println!(
         "{}",
@@ -300,6 +303,19 @@ fn print_exit_summary(env: &AgentEnv, session: &Session, started: Instant) {
         )
         .with(Color::DarkGrey)
     );
+    // "无价格预设"提示一并挪到退出时给出，不干扰会话过程
+    if let Ok(ledger) = env.ledger.summarize(Some(&session.id))
+        && ledger.unpriced_calls > 0
+    {
+        println!(
+            "{}",
+            format!(
+                "其中 {} 次调用无价格预设，费用记 0（仅计 token）；可在 config.toml [[prices]] 补充",
+                ledger.unpriced_calls
+            )
+            .with(Color::Yellow)
+        );
+    }
     println!(
         "{}",
         format!("轨迹已保存：{}", session.jsonl_path().display()).with(Color::DarkGrey)

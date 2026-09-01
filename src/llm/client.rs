@@ -155,8 +155,10 @@ impl OpenAiCompatClient {
         let stream = response.bytes_stream().eventsource();
         let mut content = String::new();
         let mut reasoning = String::new();
-        let mut reasoning_started: Option<Instant> = None;
-        let mut reasoning_secs: Option<u64> = None;
+        // 思考段计时：进入思考时开启，切到正文/工具调用时立即收起——
+        // 若等整条流读完才发 ThinkingFinished，"已思考 Ns"会迟到到正文末尾
+        let mut reasoning_open: Option<Instant> = None;
+        let mut reasoning_total_secs: f64 = 0.0;
         let mut calls: BTreeMap<u32, ToolCallOut> = BTreeMap::new();
         let mut finish_reason: Option<String> = None;
         let mut usage: Option<ChatUsage> = None;
@@ -193,22 +195,36 @@ impl OpenAiCompatClient {
                     finish_reason = Some(reason.to_string());
                 }
                 let delta = &choice["delta"];
+                // 空字符串视为字段缺失：实测有上游在正文分块上附带
+                // reasoning_content: ""，若不过滤会一直维持思考段开启，
+                // 导致"已思考"迟到到正文末尾
                 let reasoning_piece = delta["reasoning_content"]
                     .as_str()
-                    .or_else(|| delta["reasoning"].as_str());
+                    .or_else(|| delta["reasoning"].as_str())
+                    .filter(|piece| !piece.is_empty());
                 if let Some(piece) = reasoning_piece {
-                    if reasoning_started.is_none() {
-                        reasoning_started = Some(Instant::now());
+                    if reasoning_open.is_none() {
+                        reasoning_open = Some(Instant::now());
                     }
                     reasoning.push_str(piece);
                     if let Some(tx) = sink {
                         let _ = tx.send(Event::ThinkingDelta(piece.to_string()));
                     }
-                } else if !reasoning.is_empty() && reasoning_secs.is_none() {
-                    // 思考结束（切换到正文 / 工具调用）：收起计时
-                    reasoning_secs = reasoning_started.map(|t| t.elapsed().as_secs());
                 }
-                if let Some(piece) = delta["content"].as_str() {
+                // 任何非思考增量（正文 / 工具调用 / 仅 finish_reason）都意味着思考段
+                // 结束：立即收起，保证"已思考"先于正文出现——即使同一分块同时
+                // 携带思考与正文
+                if reasoning_piece.is_none()
+                    && let Some(started) = reasoning_open.take()
+                {
+                    reasoning_total_secs += started.elapsed().as_secs_f64();
+                    if let Some(tx) = sink {
+                        let _ = tx.send(Event::ThinkingFinished {
+                            seconds: thinking_secs(reasoning_total_secs),
+                        });
+                    }
+                }
+                if let Some(piece) = delta["content"].as_str().filter(|piece| !piece.is_empty()) {
                     content.push_str(piece);
                     if let Some(tx) = sink {
                         let _ = tx.send(Event::TextDelta(piece.to_string()));
@@ -246,20 +262,19 @@ impl OpenAiCompatClient {
             Ok(Ok(())) => {}
         }
 
-        if reasoning_secs.is_none() {
-            reasoning_secs = reasoning_started.map(|t| t.elapsed().as_secs());
-        }
-        if !reasoning.is_empty()
-            && let Some(tx) = sink
-        {
-            let _ = tx.send(Event::ThinkingFinished {
-                seconds: reasoning_secs.unwrap_or(0),
-            });
+        // 流读完时仍在思考（整条回复只有思考、无正文与工具调用）：补一次收尾
+        if let Some(started) = reasoning_open.take() {
+            reasoning_total_secs += started.elapsed().as_secs_f64();
+            if let Some(tx) = sink {
+                let _ = tx.send(Event::ThinkingFinished {
+                    seconds: thinking_secs(reasoning_total_secs),
+                });
+            }
         }
 
         let reply = AssistantReply {
             content: (!content.is_empty()).then_some(content),
-            reasoning_secs,
+            reasoning_secs: (!reasoning.is_empty()).then(|| thinking_secs(reasoning_total_secs)),
             tool_calls: calls.into_values().collect(),
             finish_reason,
         };
@@ -334,6 +349,11 @@ fn parse_usage(value: &Value) -> ChatUsage {
     }
 }
 
+/// 思考时长取整显示：不足 1s 记 1s，避免"已思考 0s"。
+fn thinking_secs(total_secs: f64) -> u64 {
+    (total_secs.round() as u64).max(1)
+}
+
 #[async_trait::async_trait]
 impl LlmClient for OpenAiCompatClient {
     async fn chat(
@@ -380,5 +400,85 @@ impl LlmClient for OpenAiCompatClient {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 真实平台兼容性回归：实测有上游在正文分块上附带 `reasoning_content: ""`。
+    /// 空字符串不得维持思考段开启——"已思考"必须先于正文出现（v1.9 修）。
+    #[tokio::test]
+    async fn thinking_closes_before_text_despite_empty_reasoning_fields() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            // 关键形态：正文分块同时携带 reasoning_content 空字符串
+            let body = concat!(
+                r#"data: {"choices":[{"delta":{"reasoning_content":"思考中。"}}]}"#,
+                "\n\n",
+                r#"data: {"choices":[{"delta":{"content":"答案","reasoning_content":""}}]}"#,
+                "\n\n",
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                "\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = OpenAiCompatClient::new("http://unused", "sk-test").unwrap();
+        let response = client
+            .http
+            .post(format!("http://{addr}/v1/chat/completions"))
+            .send()
+            .await
+            .unwrap();
+        let (tx, mut rx) = crate::events::event_channel();
+        let (reply, _) = match client.read_stream(response, Some(&tx)).await {
+            Ok(pair) => pair,
+            Err(failure) => {
+                let reason = match failure {
+                    AttemptFailure::Fatal(_, why) | AttemptFailure::Retryable(_, why) => why,
+                };
+                panic!("流式读取失败：{reason}");
+            }
+        };
+        drop(tx);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        server.join().unwrap();
+
+        let finished = events
+            .iter()
+            .position(|event| matches!(event, Event::ThinkingFinished { .. }))
+            .expect("应发出 ThinkingFinished");
+        let text = events
+            .iter()
+            .position(|event| matches!(event, Event::TextDelta(_)))
+            .expect("应发出 TextDelta");
+        assert!(
+            finished < text,
+            "ThinkingFinished 必须先于 TextDelta，实际事件序：{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::ThinkingDelta(t) if t.is_empty())),
+            "不应有空思考增量"
+        );
+        assert_eq!(reply.content.as_deref(), Some("答案"));
     }
 }

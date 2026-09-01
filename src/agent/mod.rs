@@ -272,7 +272,9 @@ impl Agent {
             return Ok(ToolOutcome::err(message));
         }
 
-        // 确认门（D106/D110）
+        // 确认门（D106/D110）：确认块由交互线程直接打印，与渲染器任务跨线程——
+        // 块前空行经事件流由渲染器打出，保证顺序确定
+        let _ = events.send(Event::Blank);
         match Self::gate(env, tool, &call.arguments, allowed_tools).await? {
             ConfirmDecision::Allow | ConfirmDecision::AllowAlways => {}
             ConfirmDecision::Deny => {
