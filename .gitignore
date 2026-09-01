@@ -1,1 +1,10 @@
+# Rust
 /target
+
+# 敏感配置（即使放在仓库目录内也不入库）
+.env
+config.toml
+
+# 演示/运行产物
+*.session.json
+session-*.json

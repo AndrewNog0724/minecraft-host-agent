@@ -6,7 +6,7 @@
 
 这是程序设计课程大作业：**用 Rust 从零实现一个高度场景定制化的 AI Agent**。作业的完整要求在 `docs/` 目录下，动工前必读 `docs/requirements.md`；Agent 相关技术概念参考 `docs/agent-architecture.md`。
 
-当前仓库是刚初始化的 Cargo 工程（仅 `src/main.rs` 占位）。接下来的工作顺序是：讨论选题 → 编写需求 / 设计文档 → 实现最小可用版本 → 迭代补全功能。不要在选题和设计文档确定前提前生成大量代码。
+当前状态：选题已确认（`docs/topic-statement.md`），设计文档已初步定稿（`docs/project-design.md`）。此前的实现主线（v0.12 及以前）经复盘确认方向偏离"AI Agent"主题，已整体归档至 `archive/v0.12-mvp-line` 分支（只作参考，不再继续）；主线上有价值的设计决策（如全局定名 MCHA，决议 D15）继续沿用。当前在 `v2` 分支从头重新规划实现，工作顺序是：迭代设计文档并获用户确认 → 实现最小可用版本 → 迭代补全功能。重新规划期间不要提前生成大量代码。
 
 ## 硬性约束（任何时候都不能违背）
 
@@ -23,10 +23,11 @@
 
 ## 当前进度
 
-- [ ] 选题确认（截止 08-30 23:59:59）
-- [ ] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows，手册见 `experiments/general-agent-baseline.md`）
-- [ ] 需求 / 设计文档（痛点分析、场景定制方案、架构、技术选型）
-- [ ] 最小可用版本（MVP）
+- [x] 选题确认（`docs/topic-statement.md`）
+- [x] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows，手册见 `experiments/general-agent-baseline.md`）
+- [x] 需求 / 设计文档初稿（`docs/project-design.md` 初步定稿）
+- [ ] v2 重新规划：设计文档回到 AI Agent 主题正轨并获用户确认
+- [ ] 最小可用版本（MVP，v2）
 - [ ] R1–R6 完整实现
 - [ ] 提交版设计文档定稿
 - [ ] README 补全配置与演示章节
@@ -45,7 +46,8 @@ cargo clippy -- -D warnings    # 静态检查
 
 ## 代码规范
 
-- Rust edition 2024，包名 `agent`。
+- Rust edition 2024，包名 `minecraft-host-agent`。
+- **MCHA 命名规范**（沿用归档主线决议 D15）：正式名 **Minecraft Host Agent**，仓库 `minecraft-host-agent`，简称 **MCHA**（行文）/ **`mcha`**（标识符、命令、路径一律小写）；数据目录 `~/.mcha/`；环境变量 `MCHA_API_KEY` / `MCHA_DATA` / `MCHA_WORKSPACE`。**边界**：作为技术概念的 "Agent"（AI Agent、agent 模块、相关类型名等）不属于产品命名，不改。
 - 模块化组织：每完成一个模块必须可编译、可运行，确认无误后再进入下一个（先跑通再美化）。
 - 主流程避免 `unwrap()` / `expect()`，错误要显式处理并向上传播。
 - 注释、文档、Git 提交信息使用中文；标识符使用英文。

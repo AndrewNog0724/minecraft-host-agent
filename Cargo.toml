@@ -1,6 +1,12 @@
 [package]
-name = "agent"
+name = "minecraft-host-agent"
 version = "0.1.0"
 edition = "2024"
+description = "Minecraft Host Agent（MCHA）：场景定制化 AI Agent（课程大作业）"
+
+# 可执行文件名用小写简称（决议 D15）：安装后命令为 `mcha`
+[[bin]]
+name = "mcha"
+path = "src/main.rs"
 
 [dependencies]

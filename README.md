@@ -1,8 +1,10 @@
-# agent-rs
+# Minecraft Host Agent（MCHA）
 
 一个用 Rust 从零构建的、高度场景定制化的 AI Agent。本项目是程序设计课程大作业。
 
-> **当前状态**：项目处于启动阶段，选题与需求文档正在讨论中。简介、配置、演示等章节将随开发进度逐步补全（文中以 TODO 标注）。
+> 仓库 `minecraft-host-agent`，正式名 **Minecraft Host Agent**，简称 **MCHA**（标识符小写 `mcha`）。命名沿用归档主线决议 D15。
+
+> **当前状态**：第一版实现主线已归档（`archive/v0.12-mvp-line`），正在 `v2` 分支回到 AI Agent 主题重新规划。简介、配置、演示等章节将随开发进度逐步补全（文中以 TODO 标注）。
 
 ## 项目简介
 
