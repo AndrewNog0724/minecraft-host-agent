@@ -85,7 +85,7 @@ pub fn config_set(data_dir: &Path, key: &str, value: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-pub fn config_test(data_dir: &Path) -> anyhow::Result<()> {
+pub async fn config_test(data_dir: &Path) -> anyhow::Result<()> {
     let loaded = AppConfig::load(data_dir)?;
     let config = &loaded.config;
     config
@@ -98,7 +98,8 @@ pub fn config_test(data_dir: &Path) -> anyhow::Result<()> {
         config.model.endpoint
     );
     let (latency, reply) =
-        crate::cli::setup::connection_test(&config.model.endpoint, &config.model.model, &api_key)?;
+        crate::cli::setup::connection_test(&config.model.endpoint, &config.model.model, &api_key)
+            .await?;
     println!(
         "{}",
         format!("✓ 连接正常（{latency} ms）：{reply}").with(Color::Green)

@@ -1,4 +1,8 @@
 //! 首次启动配置向导（决议 D113）：必填 3 项 + 连接测试。
+//!
+//! 注意：本模块运行在主 tokio 运行时内——dialoguer 是阻塞交互，必须放入
+//! `spawn_blocking`；连接测试直接 `await`，**不得**自建运行时嵌套 block_on
+//! （否则 panic："Cannot start a runtime from within a runtime"）。
 
 use anyhow::Context;
 use crossterm::style::{Color, Stylize};
@@ -21,7 +25,7 @@ const PRESETS: &[(&str, &str, &str)] = &[
 ];
 
 /// 运行向导；返回是否成功保存了配置。
-pub fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
+pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         println!("未检测到配置，且当前不是交互终端，无法运行向导。");
@@ -32,50 +36,58 @@ pub fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    println!("{}", "── MCHA 首次配置向导 ──".with(Color::Cyan));
-    println!("必填 3 项：API Endpoint、模型名、API Key；其余保持默认即可。");
-    println!();
+    // 交互三问（endpoint / 模型名 / API Key）：dialoguer 阻塞式，整体放入阻塞线程池
+    let answers = tokio::task::spawn_blocking(|| -> anyhow::Result<(String, String, String)> {
+        println!("{}", "── MCHA 首次配置向导 ──".with(Color::Cyan));
+        println!("必填 3 项：API Endpoint、模型名、API Key；其余保持默认即可。");
+        println!();
 
-    // 1. endpoint
-    let mut items: Vec<String> = PRESETS
-        .iter()
-        .map(|(name, _, _)| name.to_string())
-        .collect();
-    items.push("自定义 Endpoint…".to_string());
-    let selection = dialoguer::Select::new()
-        .with_prompt("选择 API 提供方")
-        .items(&items)
-        .default(0)
-        .interact()
-        .context("选择被中断")?;
-    let endpoint = if selection < PRESETS.len() {
-        PRESETS[selection].1.to_string()
-    } else {
-        Input::<String>::new()
-            .with_prompt("API Endpoint（如 https://api.example.com/v1）")
+        // 1. endpoint
+        let mut items: Vec<String> = PRESETS
+            .iter()
+            .map(|(name, _, _)| name.to_string())
+            .collect();
+        items.push("自定义 Endpoint…".to_string());
+        let selection = dialoguer::Select::new()
+            .with_prompt("选择 API 提供方")
+            .items(&items)
+            .default(0)
+            .interact()
+            .context("选择被中断")?;
+        let endpoint = if selection < PRESETS.len() {
+            PRESETS[selection].1.to_string()
+        } else {
+            Input::<String>::new()
+                .with_prompt("API Endpoint（如 https://api.example.com/v1）")
+                .interact_text()
+                .context("输入被中断")?
+        };
+        let default_model = if selection < PRESETS.len() {
+            PRESETS[selection].2.to_string()
+        } else {
+            String::new()
+        };
+
+        // 2. 模型名
+        let show_default = !default_model.is_empty();
+        let model: String = Input::new()
+            .with_prompt("模型名")
+            .default(default_model)
+            .show_default(show_default)
             .interact_text()
-            .context("输入被中断")?
-    };
-    let default_model = if selection < PRESETS.len() {
-        PRESETS[selection].2.to_string()
-    } else {
-        String::new()
-    };
+            .context("输入被中断")?;
 
-    // 2. 模型名
-    let show_default = !default_model.is_empty();
-    let model: String = Input::new()
-        .with_prompt("模型名")
-        .default(default_model)
-        .show_default(show_default)
-        .interact_text()
-        .context("输入被中断")?;
+        // 3. API Key（隐藏输入，写 .env）
+        let api_key: String = dialoguer::Password::new()
+            .with_prompt("API Key（输入不回显；将写入数据目录的 .env，不入仓库）")
+            .interact()
+            .context("输入被中断")?;
 
-    // 3. API Key（隐藏输入，写 .env）
-    let api_key: String = dialoguer::Password::new()
-        .with_prompt("API Key（输入不回显；将写入数据目录的 .env，不入仓库）")
-        .interact()
-        .context("输入被中断")?;
+        Ok((endpoint, model, api_key))
+    })
+    .await
+    .context("向导线程异常退出")??;
+    let (endpoint, model, api_key) = answers;
 
     // 写配置文件（带注释模板）与 .env
     ensure_dir(data_dir)?;
@@ -94,8 +106,8 @@ pub fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
 
     println!("{}", "配置已保存。正在连接测试…".with(Color::DarkGrey));
 
-    // 连接测试（最小对话请求）
-    match connection_test(&endpoint, &model, &api_key) {
+    // 连接测试（最小对话请求；在主运行时上直接 await）
+    match connection_test(&endpoint, &model, &api_key).await {
         Ok((latency_ms, reply)) => {
             println!(
                 "{}",
@@ -119,33 +131,30 @@ pub fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 /// 最小对话请求：验证 endpoint / key / 模型名三要素。
-pub fn connection_test(
+///
+/// async：调用方已在 tokio 运行时内，直接 await 即可——
+/// 此处若自建运行时并 block_on 会嵌套 panic（本项目实测教训）。
+pub async fn connection_test(
     endpoint: &str,
     model: &str,
     api_key: &str,
 ) -> anyhow::Result<(u128, String)> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("创建运行时失败")?;
-    runtime.block_on(async {
-        let client = OpenAiCompatClient::new(endpoint.to_string(), api_key.to_string())?;
-        let request = ChatRequest {
-            model: model.to_string(),
-            messages: vec![Message::user("这是连接测试，请只回复：OK")],
-            tools: vec![],
-            thinking: false,
-        };
-        let started = std::time::Instant::now();
-        let response = client
-            .chat(request, None)
-            .await
-            .map_err(|failure| anyhow::anyhow!("{failure}"))?;
-        let latency = started.elapsed().as_millis();
-        let reply = response
-            .reply
-            .content
-            .unwrap_or_else(|| "（模型无文本回复）".to_string());
-        Ok((latency, crate::agent::message::truncate_chars(&reply, 80)))
-    })
+    let client = OpenAiCompatClient::new(endpoint.to_string(), api_key.to_string())?;
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![Message::user("这是连接测试，请只回复：OK")],
+        tools: vec![],
+        thinking: false,
+    };
+    let started = std::time::Instant::now();
+    let response = client
+        .chat(request, None)
+        .await
+        .map_err(|failure| anyhow::anyhow!("{failure}"))?;
+    let latency = started.elapsed().as_millis();
+    let reply = response
+        .reply
+        .content
+        .unwrap_or_else(|| "（模型无文本回复）".to_string());
+    Ok((latency, crate::agent::message::truncate_chars(&reply, 80)))
 }

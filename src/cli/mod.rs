@@ -92,13 +92,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::Setup) => {
-            setup::run_setup(&data_dir)?;
+            setup::run_setup(&data_dir).await?;
             Ok(())
         }
         Some(Command::Config { action }) => match action {
             ConfigAction::List => commands::config_list(&data_dir),
             ConfigAction::Set { key, value } => commands::config_set(&data_dir, &key, &value),
-            ConfigAction::Test => commands::config_test(&data_dir),
+            ConfigAction::Test => commands::config_test(&data_dir).await,
         },
         Some(Command::Usage { session }) => commands::usage(&data_dir, session.as_deref()),
         Some(Command::Sessions { action }) => match action {

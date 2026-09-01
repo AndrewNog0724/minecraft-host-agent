@@ -41,7 +41,7 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
     // 1. 配置就绪：无配置进向导；缺必填项打印模板（D113）
     let loaded = AppConfig::load(&data_dir)?;
     let config = if !loaded.existed {
-        let saved = setup::run_setup(&data_dir)?;
+        let saved = setup::run_setup(&data_dir).await?;
         if !saved {
             anyhow::bail!("未完成配置，无法进入会话");
         }
