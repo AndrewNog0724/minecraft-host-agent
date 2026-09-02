@@ -1,0 +1,49 @@
+# L1 静态知识：服务端软件 × 支持范围 × 下载渠道（设计 §8.10）
+# 哈希可信度如实标注——无官方哈希的渠道必须留痕明示，不得冒充可校验。
+schema = 1
+updated = "2026-09-02"
+
+[[software]]
+id = "vanilla"
+name = "原版（Vanilla）"
+channel = "mojang"
+min_mc = "1.0"
+max_mc = ""
+hash = "official-sha1"
+note = "Mojang 官方服务端；版本清单与 sha1 均来自 piston-meta"
+
+[[software]]
+id = "paper"
+name = "Paper（插件服，推荐）"
+channel = "papermc"
+min_mc = "1.8.8"
+max_mc = ""
+hash = "official-sha256"
+note = "Spigot 下游、性能更好；插件玩法与混合认证的推荐载体"
+
+[[software]]
+id = "spigot"
+name = "Spigot（插件服）"
+channel = "getbukkit"
+min_mc = "1.8.8"
+max_mc = ""
+hash = "none"
+note = "无官方下载渠道，经 getbukkit 下载页抓取解析；无哈希可校验，轨迹明示第三方来源"
+
+[[software]]
+id = "fabric"
+name = "Fabric（模组服）"
+channel = "fabricmeta"
+min_mc = "1.14"
+max_mc = ""
+hash = "computed-sha256"
+note = "官方 meta 下发服务端启动器 jar；整包无官方哈希，下载后计算 sha256 留痕"
+
+[[software]]
+id = "forge"
+name = "Forge（模组服）"
+channel = "guided"
+min_mc = "1.1"
+max_mc = ""
+hash = "none"
+note = "M2.1 仅指导模式：不提供自动下载安装，Agent 给出人工步骤概要（决议 D7 修订）"

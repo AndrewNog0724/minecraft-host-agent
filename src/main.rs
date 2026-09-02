@@ -8,6 +8,7 @@ mod cancel;
 mod cli;
 mod config;
 mod events;
+mod knowledge;
 mod llm;
 mod paths;
 mod store;

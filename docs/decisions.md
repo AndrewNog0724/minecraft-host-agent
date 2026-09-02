@@ -19,7 +19,7 @@
 | D4 | 数据目录 | `~/.mcha/`（Windows：`%APPDATA%\mcha\`；原名 `~/.mc-host-agent/`，D15 定名时统一更名，不迁移旧目录） | 沿用 |
 | D5 | 基岩跨平台 | 不做 | 沿用 |
 | D6 | 提案提交方式 | ~~tool-calling（`submit_spec` 工具）交卷~~ | **废除**：ServerSpec 不再是流程关卡（D105）；结构化提交精神由工具参数 Schema 普遍承载 |
-| D7 | Forge | MVP 不做；P2 或降级为安装指导 | 沿用 |
+| D7 | Forge | MVP 不做；P2 或降级为安装指导 | **修订**（2026-09-02，随 v2.0）：分步纳入——M2.1 实现 Vanilla / Paper / Spigot / Fabric 四渠道，Forge 走指导模式（Skill 写明人工步骤概要 + 建议确认 Fabric 替代），正式 Forge 渠道 M2.x 补 |
 | D8 | LLM SDK | 不引入，自研薄客户端 | 沿用 |
 | D9 | 内网穿透选型 | 樱花frp 默认；自建 frp / Tailscale 为 P2 备选；playit 不做 | 沿用，编排主体变为 Agent + `tunnel_*` 工具 |
 | D10 | 定制内容体系 | 五层载体（代码/数据/API/指南/Prompt + 错误模式库）；不引入 RAG / embedding | **修订**：L0"决策树进 Rust 代码"废除，Skills 升为一级公民（D104）；其余沿 project-design §8.5 |
@@ -44,6 +44,13 @@
 | D112 | LLM 客户端细则 | 429/5xx 指数退避重试 ≤2 次且计入调用次数；连接 15s / 单次整体 300s；thinking 计量照收入输出 token、思考全文不入史（渲染后仅留占位）；价格表缺失模型费用记 0 并标注 |
 | D113 | 配置与首次启动 | 首次运行检测无配置自动进入 `setup` 向导：必填仅 3 项（endpoint 预设快捷项 / 模型名 / API Key 隐藏输入写 .env），其余默认值；完成后自动连接测试（最小对话请求验证连通与延迟）再进入会话；`config set`（toml_edit 保注释）/ `list` / `test` 子命令；启动校验缺失项打印可复制模板。继承归档主线两段式向导的实测设计（原 D12/D14 思路） |
 | D114 | 渲染块折叠与可读性 | 真机试用反馈的 UI 细节定稿：① 思考流直显超 4 行折叠（2000 字符保险丝），"已思考 Ns"在思考结束时立即挂出（不迟到到正文末尾）；② 工具调用行加动词短语（run_command → "运行命令"）；③ 命令输出直显超 12 行省略并注明行数，结果摘要压单行 + 渲染层 120 字符保险丝；④ 回合内跨板块自动补空行、提示符前留空行。**折叠 / 截断只影响终端显示**：完整内容照常落盘（R5）与回传模型 |
+| D115 | 下载镜像默认 | Mojang 资源默认走 BMCLAPI（域名重写实现），Adoptium 二进制默认清华 TUNA；`[network]` 配置段可切 `off` / 自定义；实际使用的域记入轨迹；白名单域同步扩充（§8.10/§12）。裁定理由：国内直连不稳定，默认保首次成功率 |
+| D116 | sys_info 工具 | 新增只读环境探测工具（OS / 架构 / 总内存 / 可用内存 / CPU 核数，sysinfo crate）：-Xmx 推荐依据，后续诊断复用；免确认、跨平台、可单测 |
+| D117 | Java 供给拆分 | `check_java`（ReadOnly 探测：PATH / JAVA_HOME / 受管目录）与 `ensure_java`（Network 安装）拆为两个工具——确认门是工具级静态属性，混装会迫使纯探测也弹确认 |
+| D118 | 服务器交付语义 | start_server 托管进程由 mcha 管理（Drop 守卫防孤儿，mcha 退出即停）；服务器长期运行以交付的 start.bat / start.sh 为准——"Agent 演示期间管理，最终交付物是目录 + 脚本"；下载 jar 统一改名 server.jar（原始名入轨迹） |
+| D119 | 离线白名单 ack | check_plan 中"离线模式配白名单"为默认要求；用户明确拒绝时 Agent 传 `whitelist_disabled_ack=true` 表示已确认风险并放行留痕——确定性闸门与用户意愿两全 |
+| D120 | 领域检索通道 | 新增 `wiki_search` / `wiki_page`（ReadOnly）+ `[retrieval]` 来源注册；mcwiki 后端（MediaWiki API，实测可用）随 M2.1 落地；mcmod 后端（HTML 解析，无官方 API）随 M2.2 mod 步骤落地、规格本批写入 §8.11。事实优先级红线扩展：版本存在性 / 下载 URL / 哈希以上游 API 为权威，Wiki / 百科定位为背景知识、交叉验证与中文语境补充 |
+| D121 | M2 分步实施 | M2.1 = 服务器设施（四渠道 + 检索通道 + Skill + 场景提示词），出口标准 US1 精简版（版本 + 账号 + 端类型 → 127.0.0.1:25565 可登录）；mod 安装（FR-12/13）、Profile（FR-16 save/load）、穿透（FR-17）、诊断（FR-18）后置 M2.2 / M2.3。裁定理由：小步迭代、决策细致不跑偏 |
 
 ## 设计文档修订历史
 
@@ -65,3 +72,5 @@
 | 2026-09-01 | v1.7 | **M1 实现期技术选型落定**（§10 表同步）：新增 async-trait（Tool / Interaction / LlmClient 的 dyn 对象安全需要）与 futures-util（Stream 驱动）；取消令牌改为手写 AtomicBool + Notify（约 40 行，答辩可解释）；termimad 移出 M1 选型（Markdown 静态块渲染属 M2 方案摘要场景，届时引入）。M1 Agent 框架实现完成：Loop + 通用工具集 + REPL + R5/R6 骨架，49 项单元 / Loop 级测试，出口标准链路经本地 mock OpenAI SSE 服务端到端验证 |
 | 2026-09-01 | v1.8 | 渲染可读性定稿（D114）：思考折叠 / 动词解释 / 输出省略 / 板块空行，§8.6 表同步；实测另修复两处环境缺陷——Windows 下 `mask.rs` 类型推断歧义（E0283）、setup 连接测试嵌套 tokio 运行时 panic |
 | 2026-09-01 | v1.9 | 二次 UI 细节：横幅改为分组排版（标题 / 空行 / 三行信息 / 操作提示，去掉工具枚举）；"无价格预设"提示从会话中移至退出汇总一次性给出；确认门改单键（crossterm raw 模式免回车，Esc/Ctrl-C 取消，Windows 只认 Press 事件，非 tty 自动退化行读取）；确认门前空行经新增 `Event::Blank` 由渲染器顺序保证（确认块由交互线程直接打印，跨线程时序脆弱）；"已思考 Ns"补齐斜体样式并加固事件时机（任何非思考增量都立即收起思考段）；实测发现清华平台在正文分块上附带 `reasoning_content: ""`，空字符串需按字段缺失处理（否则思考段一直不闭合、"已思考"迟到到正文末尾），已加 SSE 回归测试 |
+| 2026-09-02 | v2.0 | **M2.1 服务器设施方案定稿并落入实现细则**：新增决议 D115–D121（镜像默认 BMCLAPI/TUNA、sys_info、check_java/ensure_java 拆分、服务器交付语义、离线白名单 ack、领域检索通道、M2 分步）；D7 修订为 Forge 分步纳入（M2.1 指导模式）；设计文档新增 §8.10（服务器设施实现细节：版本比较器 / 渠道与镜像表 / 文件生成 / 进程生命周期 / 连通验证 / check_plan checklist）与 §8.11（检索通道：wiki_search / wiki_page，mcwiki 随 M2.1、mcmod 规格留档 M2.2）；FR-20 新增（领域检索通道）；§8.2/8.4/8.5/8.6/8.7/10/11/12/13/14 同步；选型新增 sysinfo / md-5 / scraper（M2.2） |
+| 2026-09-02 | v2.1 | **M2.1 服务器设施实现完成（S1–S9）**：knowledge 模块（MC 版本比较器、java_compat / server_software TOML、Mojang / Paper / Fabric / Adoptium 上游客户端）+ 14 个领域工具（check_version_compat / sys_info / check_java / ensure_java / fetch_server_jar / write_server_files / start_server / stop_server / server_status / probe_port / mc_ping / check_plan / wiki_search / wiki_page）；实现期实测修正并同步文档：① Paper 旧 v2 API 已 410 下线，迁移 Fill v3（§8.10/§8.4/§11）；② 26.x 年份版本线为 Java 25（官方 javaVersion 实测），java_compat 收拢 1.20.5 开区间并新增 26.x 区间；③ B站 Wiki 无 TextExtracts，正文走 parse+去标签；④ 清华 TUNA 拒绝空 UA（403），MCHA 统一 UA=mcha/<版本>；⑤ start_server spawn 对 ETXTBSY 重试（NFR-3）；新增依赖 zip/tar/flate2/sha1/md-5/sysinfo。验证：97 项单元 / Loop 级测试 + 10 项真实上游冒烟全过（JRE 受管安装、四渠道下载含哈希校验、wiki 检索、SLP ping、错误版本就近建议、离线集成流程） |

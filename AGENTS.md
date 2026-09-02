@@ -28,9 +28,11 @@
 - [x] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows，手册见 `experiments/general-agent-baseline.md`）
 - [x] 需求 / 设计文档初稿（`docs/project-design.md` 初步定稿）
 - [x] v2 设计重构：Agent-First 理念，设计文档 v1.0（2026-09-01）
-- [ ] M1 Agent 框架：Loop + 通用工具集 + REPL 会话 + R5/R6 骨架（§14 出口标准）
-- [ ] M2 开服场景包：领域工具 + 知识库 + Skills + 提示词（US1 跑通）
-- [ ] P1：穿透编排 + 日志诊断
+- [x] M1 Agent 框架：Loop + 通用工具集 + REPL 会话 + R5/R6 骨架（§14 出口标准）
+- [x] M2.1 开服场景包·服务器设施：领域工具 + 知识库 + server-setup Skill + 场景提示词（US1 精简版跑通，2026-09-02）
+- [ ] M2.2 开服场景包·mod 场景：mod 工具 + mcmod 检索 + Profile（FR-12/13/16）
+- [ ] M2.3 内网穿透（tunnel_*，FR-17）
+- [ ] P1：日志诊断（FR-18 选做）
 - [ ] 提交版设计文档定稿
 - [ ] README 补全配置与演示章节
 

@@ -293,6 +293,8 @@ impl Agent {
             events: events.clone(),
             command_timeout_secs: env.config.agent.command_timeout_secs,
             search_backend: env.config.search.backend.clone(),
+            network: env.config.network.clone(),
+            retrieval: env.config.retrieval.clone(),
         };
 
         let _ = events.send(Event::ToolStarted {
@@ -491,14 +493,19 @@ fn confirm_lines(tool: &str, permission: Permission, args: &serde_json::Value) -
     }
 }
 
-/// 框架级 system prompt（L4 基础段，M1 交付；M2 会叠加场景段）。
+/// 场景提示词（L4 场景段，M2 交付：开服管家角色 + 能力边界 + 行事规则）。
+const SCENE_PROMPT: &str = include_str!("../assets/prompts/system-scene.md");
+
+/// 框架级 system prompt（L4 基础段，M1 交付：通用角色 + 工具纪律 + 安全规则）。
+const BASE_PROMPT: &str = include_str!("../assets/prompts/system-base.md");
+
+/// system prompt（L4：框架基础段 + 场景段 + 技能清单；§8.5）。
 pub fn build_system_prompt(available_skills: &[String]) -> String {
-    let base = include_str!("../assets/prompts/system-base.md");
     if available_skills.is_empty() {
-        base.to_string()
+        format!("{BASE_PROMPT}\n\n{SCENE_PROMPT}")
     } else {
         format!(
-            "{base}\n\n## 可用技能清单\n\n以下技能可用 `load_skill` 按需加载全文：\n\n{}",
+            "{BASE_PROMPT}\n\n{SCENE_PROMPT}\n\n## 可用技能清单\n\n以下技能可用 `load_skill` 按需加载全文：\n\n{}",
             available_skills
                 .iter()
                 .map(|name| format!("- {name}"))
@@ -632,6 +639,7 @@ mod tests {
         std::fs::create_dir_all(&data_dir).unwrap();
         let mut registry = ToolRegistry::new();
         register_general_tools(&mut registry);
+        crate::tools::mc::register_mc_tools(&mut registry);
         registry.register(Box::new(BigTool));
         registry.register(Box::new(CancellingTool));
         let fake = Arc::new(FakeLlm::new(steps));
@@ -993,5 +1001,145 @@ mod tests {
         let (cost, priced) = crate::store::usage::compute_cost(None, 10, 5);
         assert_eq!(cost, 0.0);
         assert!(!priced);
+    }
+
+    /// M2 集成（§13）：脚本化开服部署流程（离线部分）——load_skill →
+    /// sys_info → check_plan（失败回环）→ check_plan（通过）→
+    /// write_server_files → mc_ping（假 SLP 服务器）→ 交付文本。
+    /// 断言消息流形状、确认门、落盘文件与事件流。
+    #[tokio::test]
+    async fn mc_deployment_flow_offline_integration() {
+        // 假 MC 服务器（SLP 应答）用独立端口：真实流程里 check_plan 在服务器
+        // 启动之前执行（端口应空闲），mc_ping 在启动之后执行
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let free = listener.local_addr().unwrap().port();
+        drop(listener);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let slp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slp_port = slp.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use crate::tools::mc::probe::{framed, read_framed};
+            if let Ok((mut sock, _)) = slp.accept().await
+                && read_framed(&mut sock).await.is_ok()
+                && read_framed(&mut sock).await.is_ok()
+            {
+                let status = r#"{"version":{"name":"1.21.1"},"players":{"online":0,"max":10},"description":"MCHA 集成测试"}"#;
+                use tokio::io::AsyncWriteExt;
+                let _ = sock.write_all(&framed(0x00, status.as_bytes())).await;
+            }
+        });
+
+        let bad_plan = serde_json::json!({
+            "software": "paper", "mc_version": "1.21.1",
+            "java_major": 21, "account_type": "all_offline",
+            "online_mode": false, "eula_accepted": false,
+            "jvm_memory_mb": 4096, "total_memory_mb": 16384,
+            "port": free, "whitelist_enabled": true
+        });
+        let good_plan = serde_json::json!({
+            "software": "paper", "mc_version": "1.21.1",
+            "java_major": 21, "account_type": "all_offline",
+            "online_mode": false, "eula_accepted": true,
+            "jvm_memory_mb": 4096, "total_memory_mb": 16384,
+            "port": free, "whitelist_enabled": true
+        });
+        let files_args = serde_json::json!({
+            "software": "paper", "mc_version": "1.21.1",
+            "eula_accepted": true, "online_mode": false,
+            "port": free, "motd": "MCHA 集成测试服",
+            "max_players": 10,
+            "whitelist": { "enabled": true, "names": ["Notch"] },
+            "jvm_memory_mb": 4096, "java_path": "/opt/mcha-jdk/bin/java"
+        });
+
+        let (env, _fake, _guard) = test_env(
+            vec![
+                FakeStep::ToolCalls(vec![(
+                    "load_skill".into(),
+                    serde_json::json!({ "name": "server-setup" }),
+                )]),
+                FakeStep::ToolCalls(vec![("sys_info".into(), serde_json::json!({}))]),
+                // 第一次校验缺 EULA → 结构化失败回环（D111）
+                FakeStep::ToolCalls(vec![("check_plan".into(), bad_plan)]),
+                FakeStep::ToolCalls(vec![("check_plan".into(), good_plan)]),
+                FakeStep::ToolCalls(vec![("write_server_files".into(), files_args)]),
+                FakeStep::ToolCalls(vec![(
+                    "mc_ping".into(),
+                    serde_json::json!({ "port": slp_port }),
+                )]),
+                FakeStep::Text(format!(
+                    "服务器已就绪：本机 127.0.0.1:{slp_port} 可登录，白名单已生效。"
+                )),
+            ],
+            Arc::new(crate::tools::general::tests::QuietInteraction),
+            test_config(),
+        );
+        let sessions = env.data_dir.join("sessions");
+        let mut session = Session::create(&sessions, &env.data_dir).unwrap();
+
+        let (end, events) = run_simple_turn(&env, &mut session, CancelToken::new()).await;
+        assert_eq!(end, TurnEnd::Natural);
+
+        // 消息流形状：user + 6×(assistant+tool) + 最终 assistant
+        let tool_messages = session
+            .messages
+            .iter()
+            .filter(|m| matches!(m, Message::Tool { .. }))
+            .count();
+        assert_eq!(tool_messages, 6, "应有 6 次工具回传");
+        assert!(matches!(
+            session.messages.last().unwrap(),
+            Message::Assistant {
+                content: Some(_),
+                ..
+            }
+        ));
+
+        // 第 3 步（check_plan 缺 EULA）为结构化失败，第 4 步通过
+        let outcomes: Vec<&ToolOutcome> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Tool { outcome, .. } => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(outcomes[0], ToolOutcome::Ok { .. }),
+            "load_skill 应成功"
+        );
+        assert!(!outcomes[2].is_ok(), "缺 EULA 的 check_plan 应失败");
+        assert!(outcomes[3].is_ok(), "修正后的 check_plan 应通过");
+        assert!(outcomes[4].is_ok(), "write_server_files 应成功");
+        assert!(outcomes[5].is_ok(), "mc_ping 应成功");
+        if let ToolOutcome::Err { error } = outcomes[2] {
+            assert!(error.contains("eula"), "{error}");
+        } else {
+            panic!("第 3 步应为 Err");
+        }
+
+        // write_server_files 是 Write 权限：standard 级应触发确认门（QuietInteraction 放行）
+        assert!(
+            events.iter().any(
+                |e| matches!(e, Event::ToolStarted { name, .. } if name == "write_server_files")
+            )
+        );
+
+        // 落盘文件断言：EULA / properties / 白名单（离线 UUID）/ 双脚本
+        let server_dir = env.workspace.join("server");
+        assert_eq!(
+            std::fs::read_to_string(server_dir.join("eula.txt")).unwrap(),
+            "# 通过 eula_accepted=true 写入（mcha 已向用户确认）\neula=true\n"
+        );
+        let properties = std::fs::read_to_string(server_dir.join("server.properties")).unwrap();
+        assert!(properties.contains(&format!("server-port={free}")));
+        assert!(properties.contains("online-mode=false"));
+        let whitelist = std::fs::read_to_string(server_dir.join("whitelist.json")).unwrap();
+        assert!(
+            whitelist.contains("b50ad385-829d-3141-a216-7e7d7539ba7f"),
+            "{whitelist}"
+        );
+        assert!(server_dir.join("start.bat").is_file());
+        assert!(server_dir.join("start.sh").is_file());
     }
 }

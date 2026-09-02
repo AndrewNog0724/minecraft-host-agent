@@ -314,6 +314,8 @@ mod tests {
             events: tx,
             command_timeout_secs: 10,
             search_backend: String::new(),
+            network: Default::default(),
+            retrieval: Default::default(),
         };
         (ctx, tempfile::tempdir().unwrap())
     }

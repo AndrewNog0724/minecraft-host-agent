@@ -1,7 +1,8 @@
 //! load_skill：按需加载领域指南（Skills，决议 D104；内容资产自 M2 起提供）。
 //!
 //! 技能目录约定：`<根>/<name>/SKILL.md`。搜索顺序：数据目录 → 可执行文件
-//! 旁 assets/ → 当前目录 assets/。只读注入，不影响安全边界。
+//! 旁 assets/ → 当前目录 assets/ → **编译期内置**（最后兜底，数据目录可覆
+//! 盖内置版，保证单二进制分发不丢技能）。只读注入，不影响安全边界。
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -10,6 +11,12 @@ use std::path::PathBuf;
 use crate::agent::message::ToolOutcome;
 
 use super::{Tool, ToolCtx, ToolError};
+
+/// 内置技能（M2 场景资产随包分发；更新 = 改 assets/ 下的文件重新编译）。
+pub(crate) const BUILTIN_SKILLS: &[(&str, &str)] = &[(
+    "server-setup",
+    include_str!("../../assets/skills/server-setup/SKILL.md"),
+)];
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoadSkillArgs {
@@ -78,6 +85,14 @@ impl Tool for LoadSkillTool {
                 )));
             }
         }
+        // 内置技能兜底（文件系统搜索不到时）
+        if let Some((_, content)) = BUILTIN_SKILLS.iter().find(|(name, _)| name == &args.name) {
+            let lines = content.lines().count();
+            return Ok(ToolOutcome::ok(format!(
+                "已加载技能「{}」（内置，{lines} 行）\n\n{content}",
+                args.name
+            )));
+        }
         let available = available_skills(&ctx.data_dir);
         let hint = if available.is_empty() {
             "当前未安装任何技能。".to_string()
@@ -107,6 +122,12 @@ pub fn available_skills(data_dir: &std::path::Path) -> Vec<String> {
             {
                 names.push(name.to_string());
             }
+        }
+    }
+    // 内置技能也计入清单
+    for (name, _) in BUILTIN_SKILLS {
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
         }
     }
     names.sort();

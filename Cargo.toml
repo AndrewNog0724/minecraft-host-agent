@@ -59,8 +59,17 @@ crossterm = "0.29"
 # 下载/命令进度条与 spinner（R4）
 indicatif = "0.18"
 
-# 哈希校验（http_download 可选 sha256）
+# 哈希校验（http_download 可选 sha256；Mojang 服务端为 sha1）
 sha2 = "0.10"
+sha1 = "0.10"
+# 白名单离线 UUID（nameUUIDFromBytes v3 口径，设计 §8.10）
+md-5 = "0.10"
+# 环境探测（sys_info 工具，决议 D116）：跨平台、免解析 shell 输出
+sysinfo = "0.33"
+# JRE 免安装包解压（ensure_java）：Windows 用 zip；Unix 用 tar.gz
+zip = "2"
+tar = "0.4"
+flate2 = "1"
 # 日志与观测：结构化分模块日志
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

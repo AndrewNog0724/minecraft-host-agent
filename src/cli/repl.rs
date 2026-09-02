@@ -63,6 +63,7 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
     let llm = OpenAiCompatClient::new(config.model.endpoint.clone(), api_key)?;
     let mut registry = ToolRegistry::new();
     register_general_tools(&mut registry);
+    crate::tools::mc::register_mc_tools(&mut registry);
     let ledger = UsageLedger::new(&data_dir)?;
     let interaction: Arc<dyn crate::tools::Interaction> = Arc::new(TerminalInteraction);
     let mut env = AgentEnv {

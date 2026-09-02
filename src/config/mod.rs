@@ -106,6 +106,53 @@ pub struct SearchConfig {
     pub backend: String,
 }
 
+/// 下载镜像配置（决议 D115，设计 §8.10）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// Mojang 资源镜像：`bmclapi` | `off` | 自定义基础 URL（默认 bmclapi）。
+    pub mojang_mirror: String,
+    /// Adoptium 二进制镜像：`tuna` | `off`（默认 tuna）。
+    pub adoptium_mirror: String,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            mojang_mirror: "bmclapi".to_string(),
+            adoptium_mirror: "tuna".to_string(),
+        }
+    }
+}
+
+/// wiki 检索来源注册（决议 D120，设计 §8.11）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetrievalConfig {
+    /// MC Wiki MediaWiki API 地址；空 = 禁用。
+    pub mcwiki: String,
+    /// MC百科检索入口（M2.2 接入）；空 = 未接入。
+    pub mcmod: String,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            mcwiki: "https://wiki.biligame.com/mc/api.php".to_string(),
+            mcmod: String::new(),
+        }
+    }
+}
+
+/// 解释 Mojang 镜像配置值（D115）：`bmclapi` 预设 / `off`（含空）/ 自定义基础 URL。
+pub fn mojang_mirror_base(raw: &str) -> Option<String> {
+    match raw.trim() {
+        "" | "off" => None,
+        "bmclapi" => Some("https://bmclapi2.bangbang93.com".to_string()),
+        other => Some(other.trim_end_matches('/').to_string()),
+    }
+}
+
 /// Agent Loop 调参（§8.1：轮数保险丝等，config 可调）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -138,6 +185,8 @@ pub struct AppConfig {
     pub budget: BudgetConfig,
     pub safety: SafetyConfig,
     pub search: SearchConfig,
+    pub network: NetworkConfig,
+    pub retrieval: RetrievalConfig,
     pub agent: AgentTuning,
 }
 
@@ -263,6 +312,14 @@ limit_cny = 10.0            # 费用硬上限，超限自动中断（R6）
 
 [safety]
 confirm_level = "standard"  # paranoid | standard | auto
+
+[network]                   # 下载镜像（决议 D115）
+mojang_mirror = "bmclapi"   # bmclapi | off | 自定义基础URL
+adoptium_mirror = "tuna"    # tuna | off
+
+[retrieval]                 # wiki 检索来源注册（决议 D120）
+mcwiki = "https://wiki.biligame.com/mc/api.php"
+mcmod = ""                  # MC百科检索入口（M2.2 接入）
 
 [search]
 backend = ""                # 空 = 无搜索后端（web_search 返回结构化错误）

@@ -1,0 +1,36 @@
+# L1 静态知识：MC 版本段 → Java 大版本（定制 2；设计 §8.10）
+# 来源：Minecraft Wiki「Java 版本」相关条目 + Mojang piston-meta 版本 JSON 的
+# javaVersion 字段，人工核对。max_mc 为空字符串表示开区间（覆盖到最新版本）。
+# 红线：本表只经查询工具（check_version_compat）进入 Agent 上下文，永不进 Prompt。
+schema = 1
+updated = "2026-09-02"
+
+[[ranges]]
+min_mc = "1.0"
+max_mc = "1.16.5"
+java_major = 8
+note = "Java 8 即可运行；现代 JRE（17/21）可向下兼容此段"
+
+[[ranges]]
+min_mc = "1.17"
+max_mc = "1.17.1"
+java_major = 16
+note = "最低 16；建议直接采用 17（16 已停止上游维护）"
+
+[[ranges]]
+min_mc = "1.18"
+max_mc = "1.20.4"
+java_major = 17
+note = "1.18 起最低要求 17"
+
+[[ranges]]
+min_mc = "1.20.5"
+max_mc = "1.99"
+java_major = 21
+note = "1.20.5 起最低要求 21（1.x 系列末段；上界 1.99 为数值边界，1.x 之后进入年份版本线）"
+
+[[ranges]]
+min_mc = "26.0"
+max_mc = ""
+java_major = 25
+note = "26.x 年份版本线：Java 25（基于 26.2 官方 javaVersion 实测，2026-09-02；新版本最终以 Mojang 官方 javaVersion 查证结果为准）"

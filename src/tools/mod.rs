@@ -5,6 +5,7 @@
 
 pub mod confinement;
 pub mod general;
+pub mod mc;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,6 +62,11 @@ pub struct ToolCtx {
     pub command_timeout_secs: u64,
     /// 搜索后端（决议 D103：空 = 无后端）。
     pub search_backend: String,
+    /// 下载镜像配置（决议 D115，领域工具用）。
+    pub network: crate::config::NetworkConfig,
+    /// wiki 检索来源注册（决议 D120，领域工具用；S8 起）。
+    #[allow(dead_code)]
+    pub retrieval: crate::config::RetrievalConfig,
 }
 
 /// 确认门请求：展示给用户的内容（完整命令 / 写入摘要 / 下载目标）。
