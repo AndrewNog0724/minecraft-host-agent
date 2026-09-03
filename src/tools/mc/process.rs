@@ -124,6 +124,35 @@ pub struct StartServerTool {
 }
 
 impl StartServerTool {
+    /// 确认门内容：让用户看清将以什么命令、在哪个目录启动什么。
+    fn confirmation_lines(args: &serde_json::Value) -> Vec<String> {
+        let java = args
+            .get("java_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("java");
+        let server_dir = args
+            .get("server_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("server");
+        let xmx = args
+            .get("jvm_memory_mb")
+            .and_then(|v| v.as_u64())
+            .map(|m| format!(" -Xmx{m}M"))
+            .unwrap_or_default();
+        let timeout = args
+            .get("ready_timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(120);
+        vec![
+            format!("目录：<工作区>/{server_dir}；命令：{java}{xmx} -jar server.jar nogui"),
+            format!(
+                "启动后将等待就绪特征（Done ( … )!），最多 {timeout} 秒；Esc / Ctrl-C 可打断等待"
+            ),
+        ]
+    }
+}
+
+impl StartServerTool {
     /// 就绪等待循环：读到 `Done (` 即就绪；读者流关闭 = 进程退出（崩溃）。
     async fn await_ready(
         ctx: &ToolCtx,
@@ -177,6 +206,9 @@ impl Tool for StartServerTool {
     }
     fn permission(&self) -> super::Permission {
         super::Permission::Execute
+    }
+    fn confirm_summary(&self, args: &serde_json::Value) -> Vec<String> {
+        Self::confirmation_lines(args)
     }
     async fn run(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutcome, ToolError> {
         let args: StartServerArgs = serde_json::from_value(args)
@@ -331,6 +363,15 @@ impl Tool for StopServerTool {
     }
     fn permission(&self) -> super::Permission {
         super::Permission::Execute
+    }
+    fn confirm_summary(&self, _args: &serde_json::Value) -> Vec<String> {
+        vec![
+            "向托管中的服务器 stdin 发送 stop 命令优雅停机（保存世界数据）".to_string(),
+            format!(
+                "{} 秒未退出则强制结束进程树",
+                GRACEFUL_STOP_TIMEOUT.as_secs()
+            ),
+        ]
     }
     async fn run(&self, args: serde_json::Value, _ctx: &ToolCtx) -> Result<ToolOutcome, ToolError> {
         let args: StopServerArgs = serde_json::from_value(args)
@@ -632,5 +673,25 @@ mod tests {
         assert_eq!(parse_port(dir.path()), Some(30000));
         std::fs::write(dir.path().join("server.properties"), "motd=x\n").unwrap();
         assert_eq!(parse_port(dir.path()), None);
+    }
+
+    #[test]
+    fn confirmation_lines_describe_start_and_stop() {
+        // M2.1 实测回归：确认弹窗不得再出现空白内容
+        let lines = StartServerTool::confirmation_lines(&serde_json::json!({
+            "java_path": "/opt/jdk/bin/java", "jvm_memory_mb": 4096
+        }));
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("/opt/jdk/bin/java -Xmx4096M -jar server.jar nogui"),
+            "{joined}"
+        );
+        assert!(joined.contains("120 秒"), "{joined}");
+
+        let (_start, stop, _status) = lifecycle_tools();
+        let lines = stop.confirm_summary(&serde_json::json!({}));
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
+        assert!(lines.join("\n").contains("stop"), "{lines:?}");
     }
 }

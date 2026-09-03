@@ -276,6 +276,15 @@ impl Tool for EnsureJavaTool {
     fn permission(&self) -> super::Permission {
         super::Permission::Network
     }
+    fn confirm_summary(&self, args: &serde_json::Value) -> Vec<String> {
+        let major = args.get("major").and_then(|v| v.as_u64()).unwrap_or(0);
+        vec![
+            format!(
+                "目标：Adoptium Temurin JRE（Java {major}），下载到 mcha 受管目录 <数据目录>/runtime/jdk-{major}/（sha256 强校验）"
+            ),
+            "本机已有匹配版本（PATH / 受管目录）时会自动复用并跳过下载".to_string(),
+        ]
+    }
     async fn run(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutcome, ToolError> {
         let args: EnsureJavaArgs = serde_json::from_value(args)
             .map_err(|err| ToolError::Io(format!("参数解析失败：{err}")))?;
@@ -478,6 +487,16 @@ mod tests {
         assert_eq!(parse_java_version_output(seventeen), Some(17));
         assert_eq!(parse_java_version_output("nothing here"), None);
         assert_eq!(parse_java_version_output(""), None);
+    }
+
+    #[test]
+    fn ensure_confirmation_lines_describe_install() {
+        let lines = EnsureJavaTool.confirm_summary(&serde_json::json!({ "major": 21 }));
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(joined.contains("Java 21"), "{joined}");
+        assert!(joined.contains("runtime/jdk-21"), "{joined}");
+        assert!(joined.contains("复用"), "{joined}");
     }
 
     #[test]

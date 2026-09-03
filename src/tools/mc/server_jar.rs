@@ -130,6 +130,26 @@ impl Tool for FetchServerJarTool {
     fn permission(&self) -> super::Permission {
         super::Permission::Network
     }
+    fn confirm_summary(&self, args: &serde_json::Value) -> Vec<String> {
+        let text = |k: &str| {
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let server_dir = args
+            .get("server_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("server");
+        vec![
+            format!(
+                "渠道：{} × MC {}（官方渠道下载，官方哈希校验不过即失败回环）",
+                text("software"),
+                text("mc_version")
+            ),
+            format!("落盘：<工作区>/{server_dir}/server.jar（统一命名，原始文件名记入轨迹）"),
+        ]
+    }
     async fn run(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutcome, ToolError> {
         let args: FetchServerJarArgs = serde_json::from_value(args)
             .map_err(|err| ToolError::Io(format!("参数解析失败：{err}")))?;
@@ -427,5 +447,16 @@ mod tests {
             .await
             .unwrap();
         assert!(!outcome.is_ok(), "forge 应拒绝自动下载：{outcome:?}");
+    }
+
+    #[test]
+    fn confirmation_lines_describe_channel_and_target() {
+        let lines = FetchServerJarTool.confirm_summary(&serde_json::json!({
+            "software": "paper", "mc_version": "1.21.1"
+        }));
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(joined.contains("paper × MC 1.21.1"), "{joined}");
+        assert!(joined.contains("server/server.jar"), "{joined}");
     }
 }

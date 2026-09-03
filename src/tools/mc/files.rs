@@ -157,6 +157,54 @@ pub(crate) fn xms_for(xmx_mb: u32) -> u32 {
 
 pub struct WriteServerFilesTool;
 
+impl WriteServerFilesTool {
+    /// 确认门内容：写配置是写权限操作，必须让用户看清方案要点（M2.1 实测
+    /// 教训：通用摘要生成器不认识领域参数名，弹窗曾一片空白）。
+    fn confirmation_lines(args: &serde_json::Value) -> Vec<String> {
+        let text = |k: &str| {
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let num = |k: &str| args.get(k).and_then(|v| v.as_u64());
+        let server_dir = args
+            .get("server_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("server");
+        let (wl_enabled, wl_count) = match args.get("whitelist") {
+            Some(w) => (
+                w.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                w.get("names")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0),
+            ),
+            None => (false, 0),
+        };
+        vec![
+            format!(
+                "服务器目录：<工作区>/{server_dir}（生成 eula / server.properties / whitelist / 启动脚本）"
+            ),
+            format!(
+                "方案：{} × MC {}；online-mode={}；端口 {}；-Xmx{}MB",
+                text("software"),
+                text("mc_version"),
+                args.get("online_mode")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+                num("port").unwrap_or(25565),
+                num("jvm_memory_mb").unwrap_or(0)
+            ),
+            format!(
+                "白名单：{}（{} 人）；eula.txt 将标记为用户已确认",
+                if wl_enabled { "开启" } else { "关闭" },
+                wl_count
+            ),
+        ]
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for WriteServerFilesTool {
     fn name(&self) -> &'static str {
@@ -170,6 +218,9 @@ impl Tool for WriteServerFilesTool {
     }
     fn permission(&self) -> super::Permission {
         super::Permission::Write
+    }
+    fn confirm_summary(&self, args: &serde_json::Value) -> Vec<String> {
+        Self::confirmation_lines(args)
     }
     async fn run(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutcome, ToolError> {
         let args: WriteServerFilesArgs = serde_json::from_value(args)
@@ -398,6 +449,27 @@ mod tests {
             retrieval: Default::default(),
         };
         (ctx, root)
+    }
+
+    #[test]
+    fn confirmation_lines_cover_plan_essentials() {
+        // M2.1 实测回归：确认弹窗不得再出现空白内容
+        let args = serde_json::json!({
+            "software": "paper", "mc_version": "1.21.1",
+            "online_mode": false, "port": 30000,
+            "whitelist": { "enabled": true, "names": ["Notch", "Dream"] },
+            "jvm_memory_mb": 4096
+        });
+        let lines = WriteServerFilesTool::confirmation_lines(&args);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
+        let joined = lines.join("\n");
+        assert!(joined.contains("online-mode=false"), "{joined}");
+        assert!(joined.contains("端口 30000"), "{joined}");
+        assert!(joined.contains("白名单：开启（2 人）"), "{joined}");
+        // 缺省参数也能生成可读内容（不 panic、不留空白）
+        let lines = WriteServerFilesTool::confirmation_lines(&serde_json::json!({}));
+        assert!(lines.iter().all(|l| !l.trim().is_empty()), "{lines:?}");
     }
 
     #[tokio::test]

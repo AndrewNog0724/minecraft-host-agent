@@ -347,6 +347,16 @@ impl Agent {
         if allowed_tools.contains(tool.name()) {
             return Ok(ConfirmDecision::AllowAlways);
         }
+        // 工具自述的确认内容优先；通用规则兜底（领域工具参数名不同，
+        // 通用规则可能取不到字段——M2.1 实测教训：弹窗内容空白）
+        let mut lines = tool.confirm_summary(args);
+        if lines.iter().all(|l| l.trim().is_empty()) {
+            lines = confirm_lines(tool.name(), permission, args);
+        }
+        // 双重兜底：仍无有效内容时展示参数摘要，绝不弹空白框
+        if lines.iter().all(|l| l.trim().is_empty()) {
+            lines = vec![crate::events::summarize_args(args, 200)];
+        }
         let request = ConfirmRequest {
             title: match permission {
                 Permission::Write => format!("工具 {} 要写入文件", tool.name()),
@@ -354,7 +364,7 @@ impl Agent {
                 Permission::Network => format!("工具 {} 要下载文件", tool.name()),
                 Permission::ReadOnly => format!("工具 {} 请求执行", tool.name()),
             },
-            lines: confirm_lines(tool.name(), permission, args),
+            lines,
         };
         match env.interaction.confirm(request).await {
             Ok(decision) => {

@@ -67,6 +67,12 @@ impl Interaction for TerminalInteraction {
                 println!("{}", format!("│ {line}").with(Color::Yellow));
             }
             println!("{}", "└─".with(Color::Yellow));
+            // 引导词：单键确认无行提示，必须明示可选按键（用户实测反馈）
+            println!(
+                "{}",
+                "请按一个键：[y] 本次允许 · [a] 本会话允许此工具 · [n] 拒绝 · [Esc/Ctrl-C] 取消"
+                    .with(Color::Yellow)
+            );
             // 首选单键确认；raw 模式不可用时退化为行读取（管道 / 重定向输入）
             match read_confirm_key() {
                 Ok(Some(c)) => {

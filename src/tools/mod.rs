@@ -118,6 +118,13 @@ pub trait Tool: Send + Sync {
     /// 参数 JSON Schema（schemars 从类型派生）。
     fn parameters_schema(&self) -> serde_json::Value;
     fn permission(&self) -> Permission;
+    /// 确认门弹窗的内容行（显示给用户的关键信息）。
+    ///
+    /// 默认返回空 = 框架按通用规则生成（命令 / 路径 / URL 摘要）；领域工具
+    /// 的参数名不同，应覆写本方法展示真正关键的方案信息，避免弹窗空白。
+    fn confirm_summary(&self, _args: &serde_json::Value) -> Vec<String> {
+        Vec::new()
+    }
     /// 执行。返回 `ToolOutcome`（含业务失败）；框架级意外才走 `ToolError`。
     async fn run(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutcome, ToolError>;
 }
