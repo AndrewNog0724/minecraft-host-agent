@@ -123,7 +123,6 @@ fn tool_verb(name: &str) -> &'static str {
         "fetch_server_jar" => "下载服务端",
         "write_server_files" => "生成服务器配置",
         "start_server" => "启动服务器",
-        "stop_server" => "停止服务器",
         "server_status" => "查看服务器状态",
         "probe_port" => "探测端口",
         "mc_ping" => "Ping 服务器",

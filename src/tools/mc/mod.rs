@@ -30,9 +30,8 @@ pub fn register_mc_tools(registry: &mut ToolRegistry) {
     registry.register(Box::new(java::EnsureJavaTool));
     registry.register(Box::new(server_jar::FetchServerJarTool));
     registry.register(Box::new(files::WriteServerFilesTool));
-    let (start, stop, status) = process::lifecycle_tools();
+    let (start, status) = process::lifecycle_tools();
     registry.register(Box::new(start));
-    registry.register(Box::new(stop));
     registry.register(Box::new(status));
     registry.register(Box::new(probe::ProbePortTool));
     registry.register(Box::new(probe::McPingTool));

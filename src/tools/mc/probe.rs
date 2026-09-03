@@ -140,7 +140,7 @@ pub(crate) fn handshake_payload(host: &str, port: u16, protocol: i32) -> Vec<u8>
     payload
 }
 
-/// 读取一个带 VarInt 长度前缀的包体（返回 packet_id 之后的裸载荷）。
+/// 读取一个带 VarInt 长度前缀的完整帧（[packet_id][payload...]）。
 pub(crate) async fn read_framed(stream: &mut tokio::net::TcpStream) -> Result<Vec<u8>, String> {
     use tokio::io::AsyncReadExt;
     // VarInt 最多 5 字节
@@ -169,12 +169,50 @@ pub(crate) async fn read_framed(stream: &mut tokio::net::TcpStream) -> Result<Ve
         .read_exact(&mut frame)
         .await
         .map_err(|err| format!("读取包体失败：{err}"))?;
-    // frame[0] 是 packet_id（status 响应为 0x00），剩余为 JSON 载荷
-    let mut payload = frame;
-    if !payload.is_empty() {
-        payload.remove(0);
+    Ok(frame)
+}
+
+/// 从字节切片头部读一个 VarInt，返回 (值, 消耗字节数)。
+pub(crate) fn read_varint(buf: &[u8]) -> Result<(u32, usize), String> {
+    let mut value = 0u32;
+    let mut shift = 0;
+    for (index, &byte) in buf.iter().enumerate() {
+        value |= ((byte & 0x7f) as u32) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((value, index + 1));
+        }
+        shift += 7;
+        if shift > 28 {
+            return Err("VarInt 编码异常".to_string());
+        }
     }
-    Ok(payload)
+    Err("VarInt 提前结束".to_string())
+}
+
+/// 解析 status 响应帧：[packet_id 0x00][VarInt 字符串长度][JSON]。
+///
+/// MC 协议所有 String 字段都带 VarInt 字节长度前缀——status 响应的 JSON
+/// 也不例外（实测 vanilla 1.21.1 响应帧载荷为 `81 01 7b ...`，即 VarInt
+/// 129 后跟 129 字节 JSON）。此前漏读该前缀、把长度字节当 JSON 首字节
+/// 解析，导致对真实服务器永远报"status 响应不是合法 JSON"。
+pub(crate) fn parse_status_frame(frame: &[u8]) -> Result<serde_json::Value, String> {
+    if frame.first() != Some(&0x00) {
+        let id = frame
+            .first()
+            .map(|b| format!("0x{b:02x}"))
+            .unwrap_or_else(|| "空".into());
+        return Err(format!("非 status 响应（packet_id {id}）"));
+    }
+    let (string_len, consumed) = read_varint(&frame[1..])?;
+    let rest = &frame[1 + consumed..];
+    let len = string_len as usize;
+    if len > rest.len() {
+        return Err(format!(
+            "status 字符串长度前缀（{len}）超过实际载荷（{} 字节）",
+            rest.len()
+        ));
+    }
+    serde_json::from_slice(&rest[..len]).map_err(|err| format!("status 响应不是合法 JSON：{err}"))
 }
 
 #[async_trait::async_trait]
@@ -236,9 +274,8 @@ async fn ping(addr: &str, host: &str, port: u16) -> Result<String, String> {
         .await
         .map_err(|err| format!("发送 status 请求失败：{err}"))?;
 
-    let payload = read_framed(&mut stream).await?;
-    let json: serde_json::Value = serde_json::from_slice(&payload)
-        .map_err(|err| format!("status 响应不是合法 JSON：{err}"))?;
+    let frame = read_framed(&mut stream).await?;
+    let json = parse_status_frame(&frame)?;
     let version = json
         .pointer("/version/name")
         .and_then(|v| v.as_str())
@@ -307,6 +344,39 @@ mod tests {
         assert_eq!(packet, vec![0x06, 0x00, b'h', b'e', b'l', b'l', b'o']);
     }
 
+    #[test]
+    fn read_varint_round_trip_and_errors() {
+        assert_eq!(read_varint(&[0x7f]), Ok((127, 1)));
+        assert_eq!(read_varint(&[0x80, 0x01]), Ok((128, 2)));
+        assert_eq!(
+            read_varint(&[0xff, 0xff, 0xff, 0xff, 0x0f]),
+            Ok((u32::MAX, 5))
+        );
+        assert!(read_varint(&[0x80]).is_err(), "提前结束应报错");
+    }
+
+    /// 黄金向量：解析 vanilla 形状的 status 帧（实测 vanilla 1.21.1 载荷
+    /// 首字节即 VarInt 字符串长度，如 `81 01 7b ...` = 129 + JSON）。
+    #[test]
+    fn parse_status_frame_reads_varint_string_prefix() {
+        let json = br#"{"version":{"name":"1.21.1"}}"#;
+        let mut payload = Vec::new();
+        write_varint(&mut payload, json.len() as u32);
+        payload.extend_from_slice(json);
+        let mut frame = vec![0x00];
+        frame.extend_from_slice(&payload);
+        let parsed = parse_status_frame(&frame).unwrap();
+        assert_eq!(
+            parsed.pointer("/version/name").and_then(|v| v.as_str()),
+            Some("1.21.1")
+        );
+
+        // 非 0x00 packet_id 应拒绝（而不是把 packet_id 当 JSON 首字节）
+        assert!(parse_status_frame(&[0x01, 0x02]).is_err());
+        // 长度前缀超过实际载荷应报错
+        assert!(parse_status_frame(&[0x00, 0x7f, b'{']).is_err());
+    }
+
     #[tokio::test]
     async fn probe_bind_detects_occupied_and_free() {
         let (tx, _rx) = crate::events::event_channel();
@@ -365,6 +435,7 @@ mod tests {
     }
 
     /// 假 MC 服务器：按 SLP 协议应答握手 + status 请求，验证 mc_ping 全链路。
+    /// 响应载荷形状与真实 vanilla 一致：[packet_id][VarInt 字符串长度][JSON]。
     #[tokio::test]
     async fn mc_ping_against_fake_slp_server() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -374,7 +445,10 @@ mod tests {
             let _handshake = read_framed(&mut sock).await.expect("握手包");
             let _request = read_framed(&mut sock).await.expect("status 请求");
             let status = r#"{"version":{"name":"1.21.1"},"players":{"online":2,"max":10},"description":"测试服 MOTD"}"#;
-            let response = framed(0x00, status.as_bytes());
+            let mut payload = Vec::new();
+            write_varint(&mut payload, status.len() as u32); // String 的 VarInt 长度前缀
+            payload.extend_from_slice(status.as_bytes());
+            let response = framed(0x00, &payload);
             use tokio::io::AsyncWriteExt;
             sock.write_all(&response).await.expect("写响应");
         });

@@ -65,7 +65,7 @@ check_java(required_major)          # 已有匹配版本则复用
   └─ 无 → ensure_java(major)        # 受管安装，返回 java 绝对路径（记下它）
 fetch_server_jar(software, version) # 下载 + 哈希校验 → server/server.jar
 write_server_files(...)             # eula / properties / whitelist / start 脚本
-start_server(java_path, ...)        # 托管启动，等待 Done (x.xxx)!
+start_server(server_dir, ...)        # 独立窗口启动，等待 Done (x.xxx)!
 probe_port(mode=connect) / mc_ping  # 连通验证
 ```
 
@@ -73,8 +73,10 @@ probe_port(mode=connect) / mc_ping  # 连通验证
 
 - 连接地址：`127.0.0.1:25565`（本机游玩）；同局域网好友用主机内网 IP:端口。
 - 白名单名单与加人方法（告诉 Agent 名字即可）。
-- 手动启动方式：`start.bat`（Windows 双击）/ `start.sh`（Unix）；**关闭 mcha
-  后服务器随之停止，长期运行请用脚本启动**。
+- 手动启动方式：`start.bat`（Windows 双击）/ `start.sh`（Unix）；`start_server`
+  弹出的独立窗口与手动双击完全一致，**关闭 mcha 不影响服务器**。
+- 停服方法：在服务器窗口按 Ctrl+C（或输入 stop 回车），世界自动保存；
+  mcha 不提供远程停服。
 - 日志位置：`server/logs/latest.log`；端口占用、Java 版本不符等常见问题直接
   把现象告诉 Agent。
 - 离线模式风险提示（若适用）。
@@ -88,8 +90,9 @@ probe_port(mode=connect) / mc_ping  # 连通验证
 - **工具返回结构化错误**：先读错误文本（内含建议），决定重试 / 换渠道 / 问用
   户。下载失败可换渠道（Paper ↔ Fabric 互为替代）；端口占用用 `probe_port`
   换端口。
-- **就绪超时**：`start_server` 报"未就绪但进程仍在运行"时用 `server_status`
-  看日志；首次生成世界慢属正常，可停掉后用更长超时重来。
+- **就绪超时**：`start_server` 报"未就绪"时先用 `server_status` 看端口与
+  日志尾部（日志毫无新写入通常是 start 脚本中 Java 路径失效）；首次生成世
+  界慢属正常，可让用户在服务器窗口停服后用更长超时重来。
 - **崩溃**：`start_server` 返回日志尾部——Java 版本不符、端口占用、内存不足
   都在尾部有特征；结合 `check_java` / `sys_info` 定位后修正方案重跑。
 - **每一步的结果都如实转述给用户**，不要静默重试超过 2 次。
@@ -130,8 +133,9 @@ probe_port(mode=connect) / mc_ping  # 连通验证
    同名同哈希自动跳过、不同则报冲突——冲突时问用户，绝不覆盖手动安装。
    CurseForge 项以 sha1 校验（强度低于 Modrinth 双哈希，输出会如实标注）；
    若返回"未开放第三方分发"，如实告知用户须从 CurseForge 页面手动下载。
-5. 安装后需重启生效：服务器在托管中则 `stop_server` → `start_server`，并
-   用 `server_status` 确认日志出现 mod 加载记录（"X mods loaded" 等）。
+5. 安装后需重启生效：请用户在服务器窗口 Ctrl+C（或输入 stop）停服，确认后
+   重新 `start_server`，并用 `server_status` 确认日志出现 mod 加载记录
+   （"X mods loaded" 等）。
 6. 部署完成后建议 `save_profile` 记录方案与 mod 清单（含版本与哈希），日后
    `load_profile` 即可对照复用。
 

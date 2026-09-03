@@ -1053,7 +1053,11 @@ mod tests {
             {
                 let status = r#"{"version":{"name":"1.21.1"},"players":{"online":0,"max":10},"description":"MCHA 集成测试"}"#;
                 use tokio::io::AsyncWriteExt;
-                let _ = sock.write_all(&framed(0x00, status.as_bytes())).await;
+                // 响应载荷按真实协议形状：String 的 VarInt 长度前缀 + JSON
+                let mut payload = Vec::new();
+                payload.push(status.len() as u8);
+                payload.extend_from_slice(status.as_bytes());
+                let _ = sock.write_all(&framed(0x00, &payload)).await;
             }
         });
 
