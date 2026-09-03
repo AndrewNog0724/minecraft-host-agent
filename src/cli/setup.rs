@@ -1,4 +1,7 @@
-//! 首次启动配置向导（决议 D113）：必填 3 项 + 连接测试。
+//! 配置向导（决议 D113/D132）：必填 3 项 + 可选 CurseForge Key + 连接测试。
+//!
+//! 可重复运行：读取已有配置作为默认值（回车保留）；`.env` 合并写入（只更新
+//! 被修改的 Key，其余原样保留）。
 //!
 //! 注意：本模块运行在主 tokio 运行时内——dialoguer 是阻塞交互，必须放入
 //! `spawn_blocking`；连接测试直接 `await`，**不得**自建运行时嵌套 block_on
@@ -7,6 +10,7 @@
 use anyhow::Context;
 use crossterm::style::{Color, Stylize};
 use dialoguer::Input;
+use std::collections::BTreeMap;
 
 use crate::agent::message::Message;
 use crate::config::AppConfig;
@@ -24,6 +28,38 @@ const PRESETS: &[(&str, &str, &str)] = &[
     ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
 ];
 
+/// 向导问题的既有值集合（预填与保留语义的数据源）。
+struct ExistingValues {
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+    curseforge_key: Option<String>,
+}
+
+/// 读取已有配置（config.toml + 环境变量；不存在时全部为空）。
+fn load_existing() -> ExistingValues {
+    let data_dir = crate::paths::shared_data_dir()
+        .cloned()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (endpoint, model) = match AppConfig::load(&data_dir) {
+        Ok(loaded) if loaded.existed => (
+            loaded.config.model.endpoint.clone(),
+            loaded.config.model.model.clone(),
+        ),
+        _ => (String::new(), String::new()),
+    };
+    let api_key = std::env::var("MCHA_API_KEY").ok().filter(|v| !v.is_empty());
+    let curseforge_key = std::env::var("MCHA_CURSEFORGE_KEY")
+        .ok()
+        .filter(|v| !v.is_empty());
+    ExistingValues {
+        endpoint,
+        model,
+        api_key,
+        curseforge_key,
+    }
+}
+
 /// 运行向导；返回是否成功保存了配置。
 pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
     use std::io::IsTerminal;
@@ -36,78 +72,111 @@ pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    // 交互三问（endpoint / 模型名 / API Key）：dialoguer 阻塞式，整体放入阻塞线程池
-    let answers = tokio::task::spawn_blocking(|| -> anyhow::Result<(String, String, String)> {
-        println!("{}", "── MCHA 首次配置向导 ──".with(Color::Cyan));
-        println!("必填 3 项：API Endpoint、模型名、API Key；其余保持默认即可。");
-        println!();
+    let existing = load_existing();
+    let has_existing = !existing.endpoint.is_empty() || existing.api_key.is_some();
 
-        // 1. endpoint
-        let mut items: Vec<String> = PRESETS
-            .iter()
-            .map(|(name, _, _)| name.to_string())
-            .collect();
-        items.push("自定义 Endpoint…".to_string());
-        let selection = dialoguer::Select::new()
-            .with_prompt("选择 API 提供方")
-            .items(&items)
-            .default(0)
-            .interact()
-            .context("选择被中断")?;
-        let endpoint = if selection < PRESETS.len() {
-            PRESETS[selection].1.to_string()
-        } else {
-            Input::<String>::new()
-                .with_prompt("API Endpoint（如 https://api.example.com/v1）")
+    // 交互问答（endpoint / 模型名 / API Key / 可选 CurseForge Key）：
+    // dialoguer 阻塞式，整体放入阻塞线程池
+    let answers = {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<WizardAnswers> {
+            if has_existing {
+                println!(
+                    "{}",
+                    "── MCHA 配置向导（检测到已有配置，回车保留当前值）──".with(Color::Cyan)
+                );
+            } else {
+                println!("{}", "── MCHA 首次配置向导 ──".with(Color::Cyan));
+            }
+            println!("必填 3 项：API Endpoint、模型名、API Key；其余保持默认即可。");
+            println!();
+
+            // 1. endpoint：预设与当前值匹配则默认选中；否则落在"自定义"
+            let mut items: Vec<String> = PRESETS
+                .iter()
+                .map(|(name, _, _)| name.to_string())
+                .collect();
+            items.push("自定义 Endpoint…".to_string());
+            let matched_preset = PRESETS
+                .iter()
+                .position(|(_, url, _)| !existing.endpoint.is_empty() && *url == existing.endpoint);
+            let default_selection = matched_preset.unwrap_or(if existing.endpoint.is_empty() {
+                0
+            } else {
+                PRESETS.len()
+            });
+            let selection = dialoguer::Select::new()
+                .with_prompt("选择 API 提供方")
+                .items(&items)
+                .default(default_selection)
+                .interact()
+                .context("选择被中断")?;
+            let endpoint = if selection < PRESETS.len() {
+                PRESETS[selection].1.to_string()
+            } else {
+                Input::<String>::new()
+                    .with_prompt("API Endpoint（如 https://api.example.com/v1）")
+                    .default(existing.endpoint.clone())
+                    .show_default(!existing.endpoint.is_empty())
+                    .interact_text()
+                    .context("输入被中断")?
+            };
+            let default_model = if selection < PRESETS.len() {
+                PRESETS[selection].2.to_string()
+            } else {
+                existing.model.clone()
+            };
+
+            // 2. 模型名
+            let show_default = !default_model.is_empty();
+            let model: String = Input::new()
+                .with_prompt("模型名")
+                .default(default_model)
+                .show_default(show_default)
                 .interact_text()
-                .context("输入被中断")?
-        };
-        let default_model = if selection < PRESETS.len() {
-            PRESETS[selection].2.to_string()
-        } else {
-            String::new()
-        };
+                .context("输入被中断")?;
 
-        // 2. 模型名
-        let show_default = !default_model.is_empty();
-        let model: String = Input::new()
-            .with_prompt("模型名")
-            .default(default_model)
-            .show_default(show_default)
-            .interact_text()
-            .context("输入被中断")?;
+            // 3. API Key（隐藏输入；已有值回车保留，输入新值则覆盖）
+            let api_key = ask_secret(
+                "API Key（输入不回显；将写入数据目录的 .env，不入仓库）",
+                existing.api_key.as_deref(),
+            )?;
 
-        // 3. API Key（隐藏输入，写 .env）
-        let api_key: String = dialoguer::Password::new()
-            .with_prompt("API Key（输入不回显；将写入数据目录的 .env，不入仓库）")
-            .interact()
-            .context("输入被中断")?;
+            // 4. 可选：CurseForge API Key（默认跳过；配置时给申请指引）
+            let curseforge_key = ask_curseforge_key(existing.curseforge_key.as_deref())?;
 
-        Ok((endpoint, model, api_key))
-    })
-    .await
-    .context("向导线程异常退出")??;
-    let (endpoint, model, api_key) = answers;
+            Ok(WizardAnswers {
+                endpoint,
+                model,
+                api_key,
+                curseforge_key,
+            })
+        })
+        .await
+        .context("向导线程异常退出")??
+    };
 
-    // 写配置文件（带注释模板）与 .env
+    // 写配置文件（带注释模板）与 .env（合并写入，保留其他 Key）
     ensure_dir(data_dir)?;
-    let config_text = AppConfig::template(&endpoint, &model);
+    let config_text = AppConfig::template(&answers.endpoint, &answers.model);
     let config_path = AppConfig::config_path(data_dir);
     std::fs::write(&config_path, config_text)
         .with_context(|| format!("写入配置失败：{}", config_path.display()))?;
-    let env_path = AppConfig::env_path(data_dir);
-    std::fs::write(&env_path, format!("MCHA_API_KEY={api_key}\n"))
-        .with_context(|| format!("写入 .env 失败：{}", env_path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600));
+
+    let mut env_updates: BTreeMap<String, Option<String>> = BTreeMap::new();
+    env_updates.insert("MCHA_API_KEY".to_string(), Some(answers.api_key.clone()));
+    match &answers.curseforge_key {
+        CfKeyChoice::Keep => {}
+        CfKeyChoice::Set(key) => {
+            env_updates.insert("MCHA_CURSEFORGE_KEY".to_string(), Some(key.clone()));
+        }
+        CfKeyChoice::Skip => {}
     }
+    merge_env_file(&AppConfig::env_path(data_dir), &env_updates)?;
 
     println!("{}", "配置已保存。正在连接测试…".with(Color::DarkGrey));
 
     // 连接测试（最小对话请求；在主运行时上直接 await）
-    match connection_test(&endpoint, &model, &api_key).await {
+    match connection_test(&answers.endpoint, &answers.model, &answers.api_key).await {
         Ok((latency_ms, reply)) => {
             println!(
                 "{}",
@@ -128,6 +197,125 @@ pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
             Ok(true)
         }
     }
+}
+
+struct WizardAnswers {
+    endpoint: String,
+    model: String,
+    api_key: String,
+    curseforge_key: CfKeyChoice,
+}
+
+/// CurseForge Key 的三种处置。
+enum CfKeyChoice {
+    /// 已有值且用户回车保留（不触碰 .env）。
+    Keep,
+    /// 用户输入了新值。
+    Set(String),
+    /// 未配置 / 用户跳过（不触碰 .env）。
+    Skip,
+}
+
+/// 隐藏输入的密钥问答：已有值时回车保留，输入新值则覆盖。
+fn ask_secret(prompt: &str, existing: Option<&str>) -> anyhow::Result<String> {
+    let prompt = match existing {
+        Some(_) => format!("{prompt}（已设置，回车保留）"),
+        None => prompt.to_string(),
+    };
+    let value = dialoguer::Password::new()
+        .with_prompt(prompt)
+        .allow_empty_password(existing.is_some())
+        .interact()
+        .context("输入被中断")?;
+    match (existing, value.is_empty()) {
+        (Some(current), true) => Ok(current.to_string()),
+        _ => Ok(value),
+    }
+}
+
+/// 可选的 CurseForge Key 步骤：默认跳过；选择配置时给分步申请指引。
+fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<CfKeyChoice> {
+    let status = match existing {
+        Some(_) => "已设置（回车保留）",
+        None => "未配置（mod 覆盖仅 Modrinth；暮色森林等 CurseForge 独占 mod 不可自动安装）",
+    };
+    let configure = dialoguer::Confirm::new()
+        .with_prompt(format!("配置 CurseForge API Key？[{status}]"))
+        .default(false)
+        .interact()
+        .context("选择被中断")?;
+    if !configure {
+        return Ok(match existing {
+            Some(_) => CfKeyChoice::Keep,
+            None => CfKeyChoice::Skip,
+        });
+    }
+    println!("申请指引（免费，一次性）：");
+    println!(
+        "  1. 打开 {} 并登录 CurseForge 账号（终端内可 Ctrl+点击）",
+        crate::cli::links::clickable("https://portal.curseforge.com/")
+    );
+    println!("  2. 进入 API Keys → 创建应用（名称随意，如 mcha）");
+    println!("  3. 复制生成的 API Key 粘贴到下面");
+    let value = dialoguer::Password::new()
+        .with_prompt("CurseForge API Key（输入不回显；回车返回跳过）")
+        .allow_empty_password(true)
+        .interact()
+        .context("输入被中断")?;
+    if value.is_empty() {
+        return Ok(match existing {
+            Some(_) => CfKeyChoice::Keep,
+            None => CfKeyChoice::Skip,
+        });
+    }
+    Ok(CfKeyChoice::Set(value))
+}
+
+/// 合并写入 .env：仅更新 updates 中出现的键（None = 删除该行），其余行原样
+/// 保留（含注释）；文件不存在时创建。D132：修复旧版整文件覆盖抹掉其他 Key。
+fn merge_env_file(
+    path: &std::path::Path,
+    updates: &BTreeMap<String, Option<String>>,
+) -> anyhow::Result<()> {
+    let mut lines: Vec<String> = std::fs::read_to_string(path)
+        .map(|text| text.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    let mut handled: Vec<String> = Vec::new();
+    for line in &mut lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(eq) = trimmed.find('=') {
+            let key = trimmed[..eq].trim().to_string();
+            if let Some(update) = updates.get(&key) {
+                match update {
+                    Some(value) => *line = format!("{key}={value}"),
+                    None => *line = String::new(),
+                }
+                handled.push(key);
+            }
+        }
+    }
+    for (key, value) in updates {
+        if handled.contains(key) {
+            continue;
+        }
+        if let Some(value) = value {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    std::fs::write(path, lines.join("\n") + "\n")
+        .with_context(|| format!("写入 .env 失败：{}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// 最小对话请求：验证 endpoint / key / 模型名三要素。
@@ -157,4 +345,46 @@ pub async fn connection_test(
         .content
         .unwrap_or_else(|| "（模型无文本回复）".to_string());
     Ok((latency, crate::agent::message::truncate_chars(&reply, 80)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_env_updates_target_keys_and_preserves_others() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".env");
+        std::fs::write(
+            &path,
+            "MCHA_API_KEY=old-llm\nMCHA_CURSEFORGE_KEY=old-cf\n# 注释保留\n",
+        )
+        .unwrap();
+
+        let mut updates = BTreeMap::new();
+        updates.insert("MCHA_API_KEY".to_string(), Some("new-llm".to_string()));
+        merge_env_file(&path, &updates).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("MCHA_API_KEY=new-llm"), "{text}");
+        assert!(
+            text.contains("MCHA_CURSEFORGE_KEY=old-cf"),
+            "其余 Key 应保留：{text}"
+        );
+        assert!(text.contains("# 注释保留"), "{text}");
+    }
+
+    #[test]
+    fn merge_env_creates_file_and_appends() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sub").join(".env");
+        let mut updates = BTreeMap::new();
+        updates.insert(
+            "MCHA_CURSEFORGE_KEY".to_string(),
+            Some("cf-key".to_string()),
+        );
+        merge_env_file(&path, &updates).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("MCHA_CURSEFORGE_KEY=cf-key"), "{text}");
+    }
 }

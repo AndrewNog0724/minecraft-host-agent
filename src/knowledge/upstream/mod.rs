@@ -4,7 +4,9 @@
 //! 失败一律结构化字符串回传给调用方（工具再回传 Agent）。
 
 pub mod adoptium;
+pub mod curseforge;
 pub mod fabric;
+pub mod modrinth;
 pub mod mojang;
 pub mod paper;
 

@@ -77,6 +77,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 # 原子写与下载临时目录
 tempfile = "3"
+# MC百科（mcmod）搜索页/主页 HTML 解析（设计 §8.11/§8.12）：CSS 选择器比正则稳
+scraper = "0.20"
 
 [profile.release]
 lto = "thin"

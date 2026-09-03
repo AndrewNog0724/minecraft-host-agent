@@ -347,8 +347,8 @@ impl Tool for EnsureJavaTool {
                 if ctx.cancel.is_cancelled() {
                     return Err(ToolError::Cancelled);
                 }
-                let expected = ExpectedHash::Sha256(resolved.sha256.clone());
-                match download_verified(ctx, url, &part_path, &label, Some(expected)).await {
+                let expected = vec![ExpectedHash::Sha256(resolved.sha256.clone())];
+                match download_verified(ctx, url, &part_path, &label, &expected).await {
                     Ok(_) => {
                         download_ok = true;
                         download_note = if attempt == 0 && use_mirror {
@@ -598,6 +598,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = EnsureJavaTool
             .run(serde_json::json!({ "major": 999 }), &ctx)
@@ -626,6 +627,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = EnsureJavaTool
             .run(serde_json::json!({ "major": 21 }), &ctx)
@@ -655,6 +657,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let installs = scan_installs(&ctx).await;
         // 环境里可能有真实 Java（PATH），但受管目录必为空：只断言不 panic 且元素有 source

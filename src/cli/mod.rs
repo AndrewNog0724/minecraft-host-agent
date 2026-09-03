@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod interaction;
+pub mod links;
 pub mod render;
 pub mod repl;
 pub mod setup;
@@ -55,6 +56,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<SessionsAction>,
     },
+    /// 查看部署档案（R5 / US3）
+    Profiles {
+        #[command(subcommand)]
+        action: ProfilesAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,6 +92,14 @@ enum SessionsAction {
     },
 }
 
+#[derive(Subcommand)]
+enum ProfilesAction {
+    /// 列出已保存的部署档案（新到旧）
+    List,
+    /// 查看档案完整内容
+    Show { id: String },
+}
+
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let data_dir = paths::shared_data_dir()?.clone();
     crate::store::ensure_dir(&data_dir)?;
@@ -107,6 +121,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Some(SessionsAction::Export { id, path }) => {
                 commands::sessions_export(&data_dir, &id, path.as_deref())
             }
+        },
+        Some(Command::Profiles { action }) => match action {
+            ProfilesAction::List => commands::profiles_list(&data_dir),
+            ProfilesAction::Show { id } => commands::profiles_show(&data_dir, &id),
         },
         Some(Command::New { msg }) => {
             repl::run(repl::ReplMode::WithMessage(msg.unwrap_or_default())).await

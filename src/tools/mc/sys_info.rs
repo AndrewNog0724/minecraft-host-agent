@@ -84,6 +84,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = SysInfoTool.run(serde_json::json!({}), &ctx).await.unwrap();
         let ToolOutcome::Ok { content } = outcome else {

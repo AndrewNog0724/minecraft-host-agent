@@ -321,6 +321,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         // 占一个随机空闲端口，bind 模式应报占用
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -354,6 +355,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = ProbePortTool
             .run(serde_json::json!({ "mode": "nope", "port": 25565 }), &ctx)
@@ -389,6 +391,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = McPingTool
             .run(serde_json::json!({ "port": port }), &ctx)

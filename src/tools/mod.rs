@@ -67,6 +67,8 @@ pub struct ToolCtx {
     /// wiki 检索来源注册（决议 D120，领域工具用；S8 起）。
     #[allow(dead_code)]
     pub retrieval: crate::config::RetrievalConfig,
+    /// CurseForge API Key（.env 装配时读取；空 = 未配置，mod 覆盖仅 Modrinth）。
+    pub curseforge_key: String,
 }
 
 /// 确认门请求：展示给用户的内容（完整命令 / 写入摘要 / 下载目标）。

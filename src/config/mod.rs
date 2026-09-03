@@ -114,6 +114,14 @@ pub struct NetworkConfig {
     pub mojang_mirror: String,
     /// Adoptium 二进制镜像：`tuna` | `off`（默认 tuna）。
     pub adoptium_mirror: String,
+    /// Modrinth API 基址；空 = 官方 `https://api.modrinth.com`。
+    /// 供集成测试注入本地 mock / 高级用户自建代理；下载域白名单含官方 CDN
+    /// 与该基址同域（设计 §8.12）。
+    #[serde(default)]
+    pub modrinth_api: String,
+    /// CurseForge API 基址；空 = 官方 `https://api.curseforge.com`（同上钩子）。
+    #[serde(default)]
+    pub curseforge_api: String,
 }
 
 impl Default for NetworkConfig {
@@ -121,6 +129,8 @@ impl Default for NetworkConfig {
         Self {
             mojang_mirror: "bmclapi".to_string(),
             adoptium_mirror: "tuna".to_string(),
+            modrinth_api: String::new(),
+            curseforge_api: String::new(),
         }
     }
 }
@@ -139,7 +149,7 @@ impl Default for RetrievalConfig {
     fn default() -> Self {
         Self {
             mcwiki: "https://wiki.biligame.com/mc/api.php".to_string(),
-            mcmod: String::new(),
+            mcmod: "https://search.mcmod.cn".to_string(),
         }
     }
 }
@@ -346,10 +356,11 @@ confirm_level = "standard"  # paranoid | standard | auto
 [network]                   # 下载镜像（决议 D115）
 mojang_mirror = "bmclapi"   # bmclapi | off | 自定义基础URL
 adoptium_mirror = "tuna"    # tuna | off
+# modrinth_api = ""         # Modrinth API 基址；空 = 官方（测试/自建代理用）
 
 [retrieval]                 # wiki 检索来源注册（决议 D120）
 mcwiki = "https://wiki.biligame.com/mc/api.php"
-mcmod = ""                  # MC百科检索入口（M2.2 接入）
+mcmod = "https://search.mcmod.cn"  # MC百科检索入口；空 = 禁用
 
 [search]
 backend = ""                # 空 = 无搜索后端（web_search 返回结构化错误）

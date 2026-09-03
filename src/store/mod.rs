@@ -5,6 +5,7 @@
 //! - 用量账本 = 全局 JSONL，一次 LLM 调用一行（重试也计一行，R6 诚实计量）
 
 pub mod mask;
+pub mod profile;
 pub mod session;
 pub mod usage;
 

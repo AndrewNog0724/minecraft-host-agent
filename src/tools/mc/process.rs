@@ -572,6 +572,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         (ctx, root)
     }

@@ -82,6 +82,8 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
         interaction: interaction.clone(),
         ledger,
         config,
+        // CurseForge Key：.env 在 main 启动时已加载进环境，此处读取一次
+        curseforge_key: std::env::var("MCHA_CURSEFORGE_KEY").unwrap_or_default(),
     };
     env.system_prompt = crate::agent::default_system_prompt(&env);
 
@@ -134,6 +136,7 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
     // 4. REPL 主循环
     let started = Instant::now();
     print_banner(&env, &session);
+    print_startup_hints(&env);
     // "本会话允许此工具"授权集合（确认门 y/a/n 的 a，D110），跨回合保留
     let mut allowed: HashSet<String> = HashSet::new();
 
@@ -252,6 +255,37 @@ async fn read_line() -> anyhow::Result<Option<String>> {
     .await
     .context("输入线程失败")??;
     Ok(line)
+}
+
+/// 启动自检（非阻断）：一次性提示未配置的可选项；全部就绪时不输出。
+/// 仅提示，不强制；不重复提醒（每会话一次）。
+fn print_startup_hints(env: &AgentEnv) {
+    let mut hints: Vec<String> = Vec::new();
+    if env.curseforge_key.trim().is_empty() {
+        hints.push(
+            "未配置 CurseForge Key：mod 覆盖仅 Modrinth（暮色森林等独占 mod 不可自动安装）。\
+             配置方法：运行 mcha setup（可选步骤，免费申请）"
+                .to_string(),
+        );
+    }
+    if env.config.search.backend.trim().is_empty() {
+        hints.push(
+            "未配置搜索后端：web_search 不可用（领域事实走知识库 + 上游 API，一般无碍）。\
+             可选配置：config.toml [search]"
+                .to_string(),
+        );
+    }
+    if hints.is_empty() {
+        return;
+    }
+    println!(
+        "{}",
+        "  可选项提示（不影响当前功能）：".with(Color::DarkGrey)
+    );
+    for hint in &hints {
+        println!("{}", format!("  · {hint}").with(Color::DarkGrey));
+    }
+    println!();
 }
 
 fn print_banner(env: &AgentEnv, session: &Session) {

@@ -128,8 +128,14 @@ fn tool_verb(name: &str) -> &'static str {
         "probe_port" => "探测端口",
         "mc_ping" => "Ping 服务器",
         "check_plan" => "校验部署方案",
-        "wiki_search" => "检索 MC Wiki",
-        "wiki_page" => "读取 Wiki 页面",
+        "wiki_search" => "检索百科",
+        "wiki_page" => "读取百科页面",
+        // mod 场景（设计 §8.12）
+        "search_mods" => "检索 mod",
+        "resolve_mod" => "解析 mod 依赖",
+        "install_mods" => "安装 mod",
+        "save_profile" => "保存部署档案",
+        "load_profile" => "读取部署档案",
         _ => "调用工具",
     }
 }

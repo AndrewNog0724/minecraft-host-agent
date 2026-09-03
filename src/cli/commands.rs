@@ -211,6 +211,36 @@ pub fn sessions_export(data_dir: &Path, id: &str, out_path: Option<&Path>) -> an
     Ok(())
 }
 
+pub fn profiles_list(data_dir: &Path) -> anyhow::Result<()> {
+    let list = crate::store::profile::list(data_dir)?;
+    if list.is_empty() {
+        println!("尚无部署档案（会话中让 Agent 用 save_profile 保存）。");
+        return Ok(());
+    }
+    println!("{}", "── 部署档案 ──".with(Color::Cyan));
+    for profile in &list {
+        println!(
+            "{}  {} × MC {}  mod {} 个",
+            profile.profile_id.clone().with(Color::Green),
+            profile.software,
+            profile.mc_version,
+            profile.mods.len()
+        );
+        println!("    {}（{}）", profile.created_at, profile.account);
+    }
+    println!("查看明细：mcha profiles show <id>");
+    Ok(())
+}
+
+pub fn profiles_show(data_dir: &Path, id: &str) -> anyhow::Result<()> {
+    let profile = crate::store::profile::load(data_dir, id)
+        .with_context(|| format!("找不到档案 {id}（mcha profiles list 查看全部）"))?;
+    println!("{}", format!("── 部署档案 {id} ──").with(Color::Cyan));
+    let text = serde_json::to_string_pretty(&profile).context("序列化档案失败")?;
+    println!("{text}");
+    Ok(())
+}
+
 fn print_message_brief(message: &crate::agent::message::Message) {
     use crate::agent::message::Message as M;
     let (role, text) = match message {

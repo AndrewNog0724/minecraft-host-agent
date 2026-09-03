@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::agent::message::ToolOutcome;
 use crate::knowledge::upstream::urlencode;
 
+use super::mcmod;
 use super::{Tool, ToolCtx, ToolError};
 
 /// 检索请求超时。
@@ -24,7 +25,7 @@ const RAW_HTML_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WikiSearchArgs {
-    /// 检索来源（mcwiki；mcmod 将随 M2.2 接入）
+    /// 检索来源（mcwiki = MC Wiki；mcmod = MC百科）
     pub source: String,
     /// 关键词（中文或英文）
     pub query: String,
@@ -35,7 +36,7 @@ pub struct WikiSearchArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WikiPageArgs {
-    /// 检索来源（mcwiki；mcmod 将随 M2.2 接入）
+    /// 检索来源（mcwiki = MC Wiki；mcmod = MC百科，标题为页面标识）
     pub source: String,
     /// 页面标题（来自 wiki_search 的结果）
     pub title: String,
@@ -44,17 +45,15 @@ pub struct WikiPageArgs {
     pub max_chars: Option<usize>,
 }
 
-/// 来源 → MediaWiki API 基址；未配置 / 未接入时返回说明性错误。
+/// MediaWiki 系来源（mcwiki）→ API 基址；mcmod 走独立后端；其余报错。
 fn api_base(ctx: &ToolCtx, source: &str) -> Result<String, String> {
     match source {
         "mcwiki" if !ctx.retrieval.mcwiki.trim().is_empty() => {
             Ok(ctx.retrieval.mcwiki.trim_end_matches('/').to_string())
         }
         "mcwiki" => Err("检索来源 mcwiki 未配置（config [retrieval] mcwiki）".to_string()),
-        "mcmod" => Err("MC百科检索后端随 M2.2（mod 场景包）接入，当前不可用；可用 http_get_text 手工查阅 search.mcmod.cn".to_string()),
-        other => Err(format!(
-            "未知检索来源「{other}」；可用：mcwiki（mcmod 将随 M2.2 接入）"
-        )),
+        "mcmod" => Err("mcmod 来源应走专用后端（内部分发错误）".to_string()),
+        other => Err(format!("未知检索来源「{other}」；可用：mcwiki、mcmod")),
     }
 }
 
@@ -288,7 +287,7 @@ impl Tool for WikiSearchTool {
         "wiki_search"
     }
     fn description(&self) -> String {
-        "检索 MC 中文 Wiki（B站镜像）：返回标题、摘要与页面链接。用于背景知识、版本沿革与中文语境问题；版本存在性 / 下载事实仍以上游 API 为权威。只读。".into()
+        "检索领域百科（source=mcwiki：MC 中文 Wiki；source=mcmod：MC百科，mod 中文名与中文语境）：返回标题、摘要与链接。背景知识通道；版本存在性 / 下载事实仍以上游 API 为权威。只读。".into()
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::to_value(schemars::schema_for!(WikiSearchArgs)).expect("Schema 派生失败")
@@ -302,11 +301,19 @@ impl Tool for WikiSearchTool {
         if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
+        let limit = args.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).clamp(1, 20);
+        if args.source == "mcmod" {
+            return match mcmod::search(&ctx.http, &ctx.retrieval.mcmod, &args.query, limit as usize)
+                .await
+            {
+                Ok(content) => Ok(ToolOutcome::ok(content)),
+                Err(reason) => Ok(ToolOutcome::err(reason)),
+            };
+        }
         let api = match api_base(ctx, &args.source) {
             Ok(api) => api,
             Err(reason) => return Ok(ToolOutcome::err(reason)),
         };
-        let limit = args.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).clamp(1, 20);
         match search(ctx, &api, &args.query, limit).await {
             Ok(content) => Ok(ToolOutcome::ok(content)),
             Err(reason) => Ok(ToolOutcome::err(reason)),
@@ -322,7 +329,7 @@ impl Tool for WikiPageTool {
         "wiki_page"
     }
     fn description(&self) -> String {
-        "读取 MC 中文 Wiki 页面正文（纯文本，自动截断）。标题来自 wiki_search 结果。只读。".into()
+        "读取领域百科页面正文（source=mcwiki：MC 中文 Wiki；source=mcmod：MC百科，标题为 wiki_search 返回的链接）。纯文本，自动截断。只读。".into()
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::to_value(schemars::schema_for!(WikiPageArgs)).expect("Schema 派生失败")
@@ -336,14 +343,20 @@ impl Tool for WikiPageTool {
         if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let api = match api_base(ctx, &args.source) {
-            Ok(api) => api,
-            Err(reason) => return Ok(ToolOutcome::err(reason)),
-        };
         let max_chars = args
             .max_chars
             .unwrap_or(PAGE_MAX_CHARS_DEFAULT)
             .clamp(500, 20000);
+        if args.source == "mcmod" {
+            return match mcmod::page(&ctx.http, &args.title, max_chars).await {
+                Ok(content) => Ok(ToolOutcome::ok(content)),
+                Err(reason) => Ok(ToolOutcome::err(reason)),
+            };
+        }
+        let api = match api_base(ctx, &args.source) {
+            Ok(api) => api,
+            Err(reason) => return Ok(ToolOutcome::err(reason)),
+        };
         match page(ctx, &api, &args.title, max_chars).await {
             Ok(content) => Ok(ToolOutcome::ok(content)),
             Err(reason) => Ok(ToolOutcome::err(reason)),
@@ -402,6 +415,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         let outcome = WikiSearchTool
             .run(
@@ -417,9 +431,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcmod_source_reports_not_ready() {
+    async fn mcmod_disabled_reports_structured_error() {
         let (tx, _rx) = crate::events::event_channel();
         let root = tempfile::tempdir().unwrap();
+        let mut retrieval = crate::config::RetrievalConfig::default();
+        retrieval.mcmod = String::new();
         let ctx = ToolCtx {
             workspace: root.path().to_path_buf(),
             data_dir: root.path().join("data"),
@@ -430,7 +446,8 @@ mod tests {
             command_timeout_secs: 10,
             search_backend: String::new(),
             network: Default::default(),
-            retrieval: Default::default(),
+            retrieval,
+            curseforge_key: String::new(),
         };
         let outcome = WikiSearchTool
             .run(
@@ -439,6 +456,52 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!outcome.is_ok(), "mcmod 未接入应如实报错：{outcome:?}");
+        if let ToolOutcome::Err { error } = outcome {
+            assert!(error.contains("未启用"), "{error}");
+        } else {
+            panic!("mcmod 禁用应结构化报错：{outcome:?}");
+        }
+    }
+
+    /// 真实上游冒烟：MC百科检索（`cargo test --ignored`）。
+    /// search.mcmod.cn 偶发返回异常页（无官方 SLA），失败重试一次再判定。
+    #[tokio::test]
+    #[ignore = "真实上游冒烟：cargo test --ignored"]
+    async fn live_mcmod_via_tool_finds_create() {
+        let (tx, _rx) = crate::events::event_channel();
+        let root = tempfile::tempdir().unwrap();
+        let ctx = ToolCtx {
+            workspace: root.path().to_path_buf(),
+            data_dir: root.path().join("data"),
+            http: reqwest::Client::builder()
+                .user_agent("mcha/0.2")
+                .build()
+                .unwrap(),
+            cancel: crate::cancel::CancelToken::new(),
+            interaction: std::sync::Arc::new(crate::tools::general::tests::QuietInteraction),
+            events: tx,
+            command_timeout_secs: 10,
+            search_backend: String::new(),
+            network: Default::default(),
+            retrieval: Default::default(),
+            curseforge_key: String::new(),
+        };
+        let mut last = String::new();
+        for _ in 0..2 {
+            let outcome = WikiSearchTool
+                .run(
+                    serde_json::json!({ "source": "mcmod", "query": "create" }),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            match outcome {
+                ToolOutcome::Ok { content } if content.contains("机械动力") => return,
+                ToolOutcome::Ok { content } => last = content,
+                ToolOutcome::Err { error } => last = error,
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        panic!("MC百科检索两次均未命中：{last}");
     }
 }

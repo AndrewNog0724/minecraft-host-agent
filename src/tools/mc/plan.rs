@@ -14,6 +14,21 @@ use crate::tools::confinement::resolve_in;
 use super::{Tool, ToolCtx, ToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlanModEntry {
+    /// 收录源：modrinth | curseforge（缺省按 modrinth 处理）
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 项目 slug
+    pub slug: String,
+    /// Modrinth 版本 id（source=modrinth 时使用）
+    #[serde(default)]
+    pub version_id: Option<String>,
+    /// CurseForge 文件 id（source=curseforge 时使用）
+    #[serde(default)]
+    pub file_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CheckPlanArgs {
     /// 服务端软件 id（vanilla | paper | spigot | fabric）
     pub software: String,
@@ -35,9 +50,12 @@ pub struct CheckPlanArgs {
     pub port: u16,
     /// 白名单开关
     pub whitelist_enabled: bool,
-    /// 用户已明确拒绝白名单并知悉风险（离线模式下默认要求白名单，D119）
+    /// 用户已明确拒绝白名单并知悉风险（离线模式下默认要求白名单）
     #[serde(default)]
     pub whitelist_disabled_ack: bool,
+    /// mod 意图清单（可选；fabric 时逐项重验版本兼容性）
+    #[serde(default)]
+    pub mods: Vec<PlanModEntry>,
     /// 服务器目录（工作区内，默认 server）
     #[serde(default)]
     pub server_dir: Option<String>,
@@ -317,6 +335,144 @@ impl Tool for CheckPlanTool {
             items.push(Item::pass("server_dir", "服务器目录不存在，将新建".into()));
         }
 
+        // ⑨ mod 兼容性：fabric 且带意图清单时，逐项重验版本覆盖目标环境
+        if args.mods.is_empty() {
+            items.push(Item::pass("mods_compat", "未带 mod 清单".into()));
+        } else if args.software != "fabric" {
+            items.push(Item::warn(
+                "mods_compat",
+                format!(
+                    "软件 {software} 非 fabric；mod 自动安装当前仅支持 fabric（清单 {count} 项未复核）",
+                    software = args.software,
+                    count = args.mods.len()
+                ),
+            ));
+        } else {
+            let mut problems: Vec<String> = Vec::new();
+            // 按源分组批量重取
+            let modrinth_ids: Vec<String> = args
+                .mods
+                .iter()
+                .filter(|m| m.source.as_deref().unwrap_or("modrinth") != "curseforge")
+                .filter_map(|m| m.version_id.clone())
+                .collect();
+            let cf_ids: Vec<i64> = args
+                .mods
+                .iter()
+                .filter(|m| m.source.as_deref() == Some("curseforge"))
+                .filter_map(|m| m.file_id)
+                .collect();
+
+            if !modrinth_ids.is_empty() {
+                let client = super::mods::modrinth_client(ctx);
+                match client.versions_by_ids(&modrinth_ids).await {
+                    Ok(versions) => {
+                        for entry in args
+                            .mods
+                            .iter()
+                            .filter(|m| m.source.as_deref().unwrap_or("modrinth") != "curseforge")
+                        {
+                            let Some(vid) = &entry.version_id else {
+                                problems.push(format!(
+                                    "{}（source=modrinth 缺少 version_id）",
+                                    entry.slug
+                                ));
+                                continue;
+                            };
+                            match versions.iter().find(|v| v.id == *vid) {
+                                Some(version) if version.covers(&args.mc_version, "fabric") => {}
+                                Some(version) => problems.push(format!(
+                                    "{slug}（版本 {ver} 仅支持 {gvs:?} / {loaders:?}）",
+                                    slug = entry.slug,
+                                    ver = version.version_number,
+                                    gvs = version.game_versions,
+                                    loaders = version.loaders
+                                )),
+                                None => problems.push(format!(
+                                    "{slug}（版本 {vid} 在 Modrinth 上不存在，清单可能过期）",
+                                    slug = entry.slug,
+                                    vid = vid
+                                )),
+                            }
+                        }
+                    }
+                    Err(reason) => problems.push(format!("Modrinth 复核失败：{reason}")),
+                }
+            }
+            if !cf_ids.is_empty() {
+                if ctx.curseforge_key.trim().is_empty() {
+                    problems.push(
+                        "清单含 CurseForge 项但 Key 未配置（无法安装，先运行 mcha setup 配置）"
+                            .to_string(),
+                    );
+                } else {
+                    let client = crate::knowledge::upstream::curseforge::CfClient::new(
+                        &ctx.http,
+                        ctx.curseforge_key.clone(),
+                    );
+                    match client.files_by_ids(&cf_ids).await {
+                        Ok(files) => {
+                            for entry in args
+                                .mods
+                                .iter()
+                                .filter(|m| m.source.as_deref() == Some("curseforge"))
+                            {
+                                let Some(fid) = entry.file_id else {
+                                    problems.push(format!(
+                                        "{}（source=curseforge 缺少 file_id）",
+                                        entry.slug
+                                    ));
+                                    continue;
+                                };
+                                match files.iter().find(|f| f.id == fid) {
+                                    Some(file) if file.covers(&args.mc_version, "fabric") => {}
+                                    Some(file) => problems.push(format!(
+                                        "{slug}（文件仅支持 {gvs:?}）",
+                                        slug = entry.slug,
+                                        gvs = file.game_versions
+                                    )),
+                                    None => problems.push(format!(
+                                        "{slug}（文件 {fid} 在 CurseForge 上不存在，清单可能过期）",
+                                        slug = entry.slug,
+                                        fid = fid
+                                    )),
+                                }
+                            }
+                        }
+                        Err(reason) => problems.push(format!("CurseForge 复核失败：{reason}")),
+                    }
+                }
+            }
+
+            if problems.is_empty() {
+                items.push(Item::pass(
+                    "mods_compat",
+                    format!(
+                        "mod 清单 {count} 项均兼容 MC {mc} / fabric",
+                        count = args.mods.len(),
+                        mc = args.mc_version
+                    ),
+                ));
+            } else if problems.iter().any(|p| {
+                !p.starts_with("Modrinth 复核失败")
+                    && !p.starts_with("CurseForge 复核失败")
+                    && !p.contains("Key 未配置")
+            }) {
+                items.push(Item::fail(
+                    "mods_compat",
+                    format!(
+                        "mod 兼容性不满足：{}；请重新 resolve_mod 或调整 MC 版本",
+                        problems.join("、")
+                    ),
+                ));
+            } else {
+                items.push(Item::warn(
+                    "mods_compat",
+                    format!("mod 兼容性未能完整复核：{}", problems.join("；")),
+                ));
+            }
+        }
+
         // 汇总
         let failures: Vec<&Item> = items
             .iter()
@@ -377,6 +533,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         };
         (ctx, root)
     }
@@ -498,5 +655,99 @@ mod tests {
             panic!("ack 后应放行：{outcome:?}");
         };
         assert!(content.contains("⚠ [whitelist]"), "{content}");
+    }
+
+    /// 最小 Modrinth mock：`/v2/versions` 返回两个版本——
+    /// vOK 覆盖 1.21.1/fabric，vBAD 仅支持 1.20.4。
+    fn spawn_versions_mock() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let version = |id: &str, number: &str, gv: &str| {
+                format!(
+                    r#"{{"id":"{id}","project_id":"p-{id}","version_number":"{number}","game_versions":[{gv}],"loaders":["fabric"],"dependencies":[],"files":[]}}"#
+                )
+            };
+            let body = format!(
+                "[{}]",
+                [
+                    version("vOK", "1.0.0", r#""1.21.1""#),
+                    version("vBAD", "0.9.0", r#""1.20.4""#)
+                ]
+                .join(",")
+            );
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn ctx_with_modrinth_api(workspace: &std::path::Path, base: &str) -> ToolCtx {
+        let (tx, _rx) = crate::events::event_channel();
+        let mut network = crate::config::NetworkConfig::default();
+        network.modrinth_api = base.to_string();
+        ToolCtx {
+            workspace: workspace.to_path_buf(),
+            data_dir: workspace.join("data"),
+            http: reqwest::Client::new(),
+            cancel: crate::cancel::CancelToken::new(),
+            interaction: std::sync::Arc::new(crate::tools::general::tests::QuietInteraction),
+            events: tx,
+            command_timeout_secs: 10,
+            search_backend: String::new(),
+            network,
+            retrieval: Default::default(),
+            curseforge_key: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn mods_compat_checked_against_target() {
+        let mock = spawn_versions_mock();
+        let root = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_modrinth_api(root.path(), &mock);
+        let port = free_port().await;
+
+        // 兼容版本 → 通过
+        let mut plan = good_plan(port);
+        plan["software"] = serde_json::json!("fabric");
+        plan["mods"] = serde_json::json!([{"slug": "jei", "version_id": "vOK"}]);
+        let outcome = CheckPlanTool.run(plan, &ctx).await.unwrap();
+        let ToolOutcome::Ok { content } = outcome else {
+            panic!("兼容 mod 清单应通过：{outcome:?}");
+        };
+        assert!(content.contains("✓ [mods_compat]"), "{content}");
+
+        // 不兼容版本 → 失败
+        let mut plan = good_plan(port);
+        plan["software"] = serde_json::json!("fabric");
+        plan["mods"] = serde_json::json!([{"slug": "old-mod", "version_id": "vBAD"}]);
+        let outcome = CheckPlanTool.run(plan, &ctx).await.unwrap();
+        let ToolOutcome::Err { error } = outcome else {
+            panic!("不兼容 mod 应失败：{outcome:?}");
+        };
+        assert!(error.contains("mods_compat"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn mods_on_non_fabric_is_warning_not_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_modrinth_api(root.path(), "http://127.0.0.1:1");
+        let port = free_port().await;
+        let mut plan = good_plan(port);
+        plan["mods"] = serde_json::json!([{"slug": "jei", "version_id": "vOK"}]);
+        let outcome = CheckPlanTool.run(plan, &ctx).await.unwrap();
+        let ToolOutcome::Ok { content } = outcome else {
+            panic!("非 fabric 带 mod 应提示不阻断：{outcome:?}");
+        };
+        assert!(content.contains("⚠ [mods_compat]"), "{content}");
     }
 }

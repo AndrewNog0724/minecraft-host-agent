@@ -1,0 +1,104 @@
+# L1 静态知识：mod 中文别名表（设计 §8.12）
+# 只承载「叫法 → 项目」映射（source 标注收录源），不承载版本兼容事实
+# （版本一律经工具实时查证）。slug 均经上游 API 实测存在（2026-09-03）。
+schema = 1
+updated = "2026-09-03"
+source = "Modrinth / CurseForge API 实测"
+
+[[mods]]
+slug = "jei"
+name = "Just Enough Items (JEI)"
+aliases = ["JEI", "jei", "物品管理器", "合成表查询", "Just Enough Items"]
+
+[[mods]]
+slug = "emi"
+name = "EMI"
+aliases = ["EMI", "emi", "物品管理器EMI"]
+
+[[mods]]
+slug = "rei"
+name = "Roughly Enough Items (REI)"
+aliases = ["REI", "rei", "近似足够物品"]
+
+[[mods]]
+slug = "sodium"
+name = "Sodium"
+aliases = ["Sodium", "sodium", "钠", "渲染优化", "帧数优化"]
+
+[[mods]]
+slug = "lithium"
+name = "Lithium"
+aliases = ["Lithium", "lithium", "锂", "逻辑优化", "服务端优化"]
+
+[[mods]]
+slug = "iris"
+name = "Iris Shaders"
+aliases = ["Iris", "iris", "光影", "光影加载器", "鸢尾"]
+
+[[mods]]
+slug = "fabric-api"
+name = "Fabric API"
+aliases = ["Fabric API", "fabric api", "FAPI", "Fabric 前置", "fabric前置"]
+
+[[mods]]
+slug = "cloth-config"
+name = "Cloth Config API"
+aliases = ["Cloth Config", "cloth config", "Cloth 前置"]
+
+[[mods]]
+slug = "modmenu"
+name = "Mod Menu"
+aliases = ["Mod Menu", "mod menu", "模组菜单", "mod菜单"]
+
+[[mods]]
+slug = "appleskin"
+name = "AppleSkin"
+aliases = ["AppleSkin", "appleskin", "苹果皮", "饥饿值显示", "饱和度显示"]
+
+[[mods]]
+slug = "jade"
+name = "Jade"
+aliases = ["Jade", "jade", "物品信息提示", "方块信息提示", "看名字"]
+
+[[mods]]
+slug = "xaeros-minimap"
+name = "Xaero's Minimap"
+aliases = ["Xaero的小地图", "小地图", "Xaeros Minimap", "xaero minimap"]
+
+[[mods]]
+slug = "xaeros-world-map"
+name = "Xaero's World Map"
+aliases = ["Xaero的世界地图", "世界地图", "Xaeros World Map"]
+
+[[mods]]
+slug = "create"
+name = "Create"
+aliases = ["Create", "create", "机械动力"]
+
+[[mods]]
+slug = "ferrite-core"
+name = "Ferrite Core"
+aliases = ["Ferrite Core", "ferrite core", "内存优化", "铁氧体核心"]
+
+[[mods]]
+slug = "krypton"
+name = "Krypton"
+aliases = ["Krypton", "krypton", "氪", "网络优化"]
+
+[[mods]]
+slug = "immediatelyfast"
+name = "ImmediatelyFast"
+aliases = ["ImmediatelyFast", "immediatelyfast", "即时渲染优化"]
+
+# CurseForge 独占项目：source="curseforge"（需用户配置 CurseForge Key）。
+[[mods]]
+slug = "the-twilight-forest"
+name = "The Twilight Forest"
+source = "curseforge"
+aliases = ["暮色森林", "twilight forest", "twilightforest", "Twilight Forest"]
+
+# 两源都无收录的高频需求：零命中时给出如实的结构化提示（不假装能装）。
+[[unlisted]]
+name = "OptiFine（高清修复）"
+aliases = ["OptiFine", "optifine", "高清修复"]
+reason = "自有分发渠道，Modrinth 与 CurseForge 均无收录；Fabric 生态建议改用 Sodium（渲染优化）+ Iris（光影）组合"

@@ -22,8 +22,9 @@
    名进服"的风险，并默认开启白名单；用户明确拒绝白名单时，在 `check_plan`
    中以 `whitelist_disabled_ack=true` 留痕放行。
 5. **部署前必过 `check_plan`**：校验未通过不得开始下载与写文件，先补齐缺项。
-6. **Mod 不装**：mod 的检索与安装属于后续能力（M2.2）；用户要 mod 时如实
-   说明，可先交付裸服务器，或引导等待后续版本。Forge 同理（见 §8）。
+6. **Mod 与 Forge 边界**：mod 的检索 / 解析 / 安装按 §10 执行（自动化当前
+   仅支持 Fabric；数据源 Modrinth 为主，CurseForge 为可选扩展通道）；Forge
+   为指导模式（见 §8）。两源都无收录的 mod（如 OptiFine）必须如实说明。
 
 ## 1. 信息收集（缺什么问什么，用 `ask_user` 选项式提问）
 
@@ -105,5 +106,48 @@ probe_port(mode=connect) / mc_ping  # 连通验证
 ## 9. 检索的使用边界
 
 `wiki_search` / `wiki_page`（mcwiki 源）：查版本沿革、Java 版本历史、玩法术
-语等背景信息，或交叉验证知识库结论。mcmod 源（MC百科）随后续版本接入。检
-索结果不得替代 §0.1 的上游查证。
+语等背景信息，或交叉验证知识库结论。mcmod 源（MC百科）：mod 的中文名称、
+简介与中文语境背景（`source="mcmod"`）。检索结果不得替代 §0.1 的上游查证。
+
+## 10. mod 场景（Fabric）
+
+适用：用户点名要装 mod（清单安装），或描述玩法偏好求推荐。mod 自动化当前
+仅支持 Fabric；用户要 Forge 时按 §8 引导。
+
+### 10.1 清单安装（用户点名 mod）
+
+1. 目标环境缺一问一：MC 版本 × Fabric 服务端，两个都必须明确。
+2. `resolve_mod(mods=[...], mc_version, loader="fabric")` 一次解析全部：
+   中文别名 → Modrinth 精确匹配 → 版本匹配 → 依赖闭包 → 输出意图清单。
+   CurseForge 独占项目（别名表标注 source="curseforge"，如暮色森林）在用户
+   已配置 CurseForge Key 时自动走 CurseForge 通道解析安装。
+   - **多命中**：用 `ask_user` 请用户选择后重试，不要擅自替用户挑。
+   - **零命中且提示需要 CurseForge Key**：如实转述工具返回的申请指引
+     （portal.curseforge.com → 创建应用 → 写入 .env 的 MCHA_CURSEFORGE_KEY），
+     用 `ask_user` 问用户"现在配置（等其粘贴后重试）/ 暂时跳过该 mod"。
+   - **依赖不满足**：按错误信息建议调整 MC 版本或换 mod，与用户确认。
+3. `check_plan(..., mods=意图清单)` 部署前复核兼容性（第 9 项）。
+4. `install_mods(server_dir, manifest=意图清单)` 安装（会触发用户确认门）。
+   同名同哈希自动跳过、不同则报冲突——冲突时问用户，绝不覆盖手动安装。
+   CurseForge 项以 sha1 校验（强度低于 Modrinth 双哈希，输出会如实标注）；
+   若返回"未开放第三方分发"，如实告知用户须从 CurseForge 页面手动下载。
+5. 安装后需重启生效：服务器在托管中则 `stop_server` → `start_server`，并
+   用 `server_status` 确认日志出现 mod 加载记录（"X mods loaded" 等）。
+6. 部署完成后建议 `save_profile` 记录方案与 mod 清单（含版本与哈希），日后
+   `load_profile` 即可对照复用。
+
+### 10.2 自然语言推荐（用户描述玩法偏好）
+
+1. `ask_user` 问清偏好：玩法向 / 性能向 / 视觉向、想要什么体验。
+2. 把偏好翻译成多组英文关键词，多次调 `search_mods`（如 survival、
+   storage、minimap、performance、shaders）。
+3. 汇总 3–6 个候选：说明推荐理由、下载量、依赖情况（前置如 Fabric API /
+   Cloth Config 需一并装）。
+4. `ask_user` 让用户勾选确认 → 走 10.1 的 resolve → check_plan → install。
+
+### 10.3 mod 红线
+
+- 版本兼容事实只信 `resolve_mod` / `check_plan` 的查证结果，不凭记忆。
+- 意图清单必须**原样**传给 `install_mods`；下载 URL 与哈希由安装时实时重取
+  Modrinth 得到，不要在清单里手写或修改。
+- mod 装完必须提示"重启服务器后生效"。

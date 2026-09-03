@@ -68,6 +68,8 @@ pub struct AgentEnv {
     pub http: reqwest::Client,
     pub interaction: Arc<dyn Interaction>,
     pub ledger: UsageLedger,
+    /// CurseForge API Key（.env 装配时读取；mod 双源用）。
+    pub curseforge_key: String,
 }
 
 /// Agent Loop（无状态方法集；会话状态在 `Session`，框架配置在 `AgentEnv`）。
@@ -309,6 +311,7 @@ impl Agent {
             search_backend: env.config.search.backend.clone(),
             network: env.config.network.clone(),
             retrieval: env.config.retrieval.clone(),
+            curseforge_key: env.curseforge_key.clone(),
         };
 
         let _ = events.send(Event::ToolStarted {
@@ -677,6 +680,7 @@ mod tests {
             interaction,
             ledger: UsageLedger::new(guard.path()).unwrap(),
             config,
+            curseforge_key: String::new(),
         };
         (env, fake, guard)
     }
@@ -1165,5 +1169,116 @@ mod tests {
         );
         assert!(server_dir.join("start.bat").is_file());
         assert!(server_dir.join("start.sh").is_file());
+    }
+
+    /// mod 场景端到端（本地 mock Modrinth，不花真钱）：
+    /// resolve_mod（依赖闭包）→ install_mods（校验下载落盘）→
+    /// save_profile → load_profile。模拟 LLM 连续两个回合。
+    #[tokio::test]
+    async fn mod_scenario_resolve_install_profile_end_to_end() {
+        let mock = crate::tools::mc::mods::tests::spawn_modrinth_mock();
+        let mut config = test_config();
+        config.network.modrinth_api = mock;
+        let (env, fake, _guard) = test_env(
+            vec![
+                // 回合 1：解析（sodium 带出依赖 jei）→ 安装 → 收尾
+                FakeStep::ToolCalls(vec![(
+                    "resolve_mod".into(),
+                    serde_json::json!({"mods": ["Sodium"], "mc_version": "1.21.1", "loader": "fabric"}),
+                )]),
+                FakeStep::ToolCalls(vec![(
+                    "install_mods".into(),
+                    serde_json::json!({"server_dir": "server", "manifest": [
+                        {"slug": "sodium", "version_id": "sodV1", "file_name": "sodV1.jar"},
+                        {"slug": "jei", "version_id": "jeiV1", "file_name": "jeiV1.jar"}
+                    ]}),
+                )]),
+                FakeStep::Text("mod 已装好，重启服务器后生效。".into()),
+                // 回合 2：保存档案 → 读回 → 收尾
+                FakeStep::ToolCalls(vec![(
+                    "save_profile".into(),
+                    serde_json::json!({"account": "all_offline", "software": "fabric",
+                        "mc_version": "1.21.1", "java_major": 21, "jvm_memory_mb": 4096,
+                        "network": "lan",
+                        "mods": [
+                            {"slug": "sodium", "version_id": "sodV1", "file_name": "sodV1.jar", "sha1": "aa"},
+                            {"slug": "jei", "version_id": "jeiV1", "file_name": "jeiV1.jar", "sha1": "bb"}
+                        ],
+                        "notes": "集成测试档案"}),
+                )]),
+                FakeStep::ToolCalls(vec![("load_profile".into(), serde_json::json!({}))]),
+                FakeStep::Text("档案已保存并读回，可对照复用。".into()),
+            ],
+            Arc::new(crate::tools::general::tests::QuietInteraction),
+            config,
+        );
+        let sessions = env.data_dir.join("sessions");
+        let mut session = Session::create(&sessions, &env.data_dir).unwrap();
+
+        // 回合 1
+        let (tx, mut rx) = event_channel();
+        let mut allowed = HashSet::new();
+        let end = Agent::run_turn(
+            &env,
+            &mut session,
+            "装个 Sodium",
+            &tx,
+            CancelToken::new(),
+            &mut allowed,
+        )
+        .await
+        .unwrap();
+        while rx.try_recv().is_ok() {}
+        assert_eq!(end, TurnEnd::Natural);
+
+        // 落盘验证：两个 jar（含依赖 jei）已在 mods 目录
+        let mods_dir = env.workspace.join("server").join("mods");
+        assert!(mods_dir.join("sodV1.jar").is_file(), "sodium 应已落盘");
+        assert!(mods_dir.join("jeiV1.jar").is_file(), "依赖 jei 应已落盘");
+
+        // 回合 2
+        let (tx, mut rx) = event_channel();
+        let end = Agent::run_turn(
+            &env,
+            &mut session,
+            "保存档案再读回",
+            &tx,
+            CancelToken::new(),
+            &mut allowed,
+        )
+        .await
+        .unwrap();
+        while rx.try_recv().is_ok() {}
+        assert_eq!(end, TurnEnd::Natural);
+
+        // 档案落盘验证
+        let profiles = crate::store::profile::list(&env.data_dir).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].mods.len(), 2);
+
+        // 消息流：全部工具调用都成功（无结构化错误回环）
+        let tool_outcomes: Vec<&ToolOutcome> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Tool { outcome, .. } => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_outcomes.len(),
+            4,
+            "应有 resolve/install/save/load 四次工具结果"
+        );
+        assert!(
+            tool_outcomes.iter().all(|o| o.is_ok()),
+            "全部工具结果应为 Ok：{tool_outcomes:?}"
+        );
+        // load_profile 的输出包含档案全文（R5 非黑盒）
+        if let ToolOutcome::Ok { content } = tool_outcomes[3] {
+            assert!(content.contains("完整档案 JSON"), "{content}");
+            assert!(content.contains("集成测试档案"), "{content}");
+        }
+        let _ = fake;
     }
 }

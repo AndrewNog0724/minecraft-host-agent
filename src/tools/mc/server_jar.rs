@@ -40,7 +40,7 @@ const GETBUKKIT_CDN_HOST: &str = "cdn.getbukkit.org";
 /// 渠道解析结果（下载前）。urls 按优先级排列（镜像在前，官方兜底）。
 struct Resolved {
     urls: Vec<String>,
-    expected: Option<ExpectedHash>,
+    expected: Vec<ExpectedHash>,
     file_name: String,
     trust_note: String,
 }
@@ -227,7 +227,7 @@ impl Tool for FetchServerJarTool {
                 }
                 Resolved {
                     urls,
-                    expected: Some(ExpectedHash::Sha1(r.sha1.clone())),
+                    expected: vec![ExpectedHash::Sha1(r.sha1.clone())],
                     file_name: format!("server-{version}.jar"),
                     trust_note: format!(
                         "Mojang 官方渠道（官方 sha1={}…；镜像策略：{mirror_text}）",
@@ -240,7 +240,7 @@ impl Tool for FetchServerJarTool {
                 match client.latest_build(&version.raw).await {
                     Ok(b) => Resolved {
                         urls: vec![b.url],
-                        expected: Some(ExpectedHash::Sha256(b.sha256)),
+                        expected: vec![ExpectedHash::Sha256(b.sha256)],
                         file_name: b.file_name,
                         trust_note: format!(
                             "PaperMC 官方渠道（Fill v3，官方 sha256，build {}）",
@@ -255,7 +255,7 @@ impl Tool for FetchServerJarTool {
                 match client.resolve_server(&version.raw).await {
                     Ok(f) => Resolved {
                         urls: vec![f.url],
-                        expected: None,
+                        expected: Vec::new(),
                         file_name: format!("fabric-server-{version}.jar"),
                         trust_note: format!(
                             "Fabric 官方 meta（loader {} / installer {}；整包无官方哈希，落地计算 sha256 留痕）",
@@ -268,7 +268,7 @@ impl Tool for FetchServerJarTool {
             "getbukkit" => match resolve_spigot(ctx, &version.raw).await {
                 Ok((url, file_name, trace)) => Resolved {
                     urls: vec![url],
-                    expected: None,
+                    expected: Vec::new(),
                     file_name,
                     trust_note: format!(
                         "第三方渠道，无官方哈希，落地计算 sha256 留痕；解析链路：{trace}"
@@ -297,7 +297,7 @@ impl Tool for FetchServerJarTool {
             if ctx.cancel.is_cancelled() {
                 return Err(ToolError::Cancelled);
             }
-            match download_verified(ctx, url, &part, label, resolved.expected.clone()).await {
+            match download_verified(ctx, url, &part, label, &resolved.expected).await {
                 Ok(r) => {
                     result = Some(r);
                     used_url = url.clone();
@@ -364,6 +364,7 @@ mod tests {
             search_backend: String::new(),
             network: Default::default(),
             retrieval: Default::default(),
+            curseforge_key: String::new(),
         }
     }
 
