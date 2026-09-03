@@ -118,13 +118,12 @@ probe_port(mode=connect) / mc_ping  # 连通验证
 
 1. 目标环境缺一问一：MC 版本 × Fabric 服务端，两个都必须明确。
 2. `resolve_mod(mods=[...], mc_version, loader="fabric")` 一次解析全部：
-   中文别名 → Modrinth 精确匹配 → 版本匹配 → 依赖闭包 → 输出意图清单。
-   CurseForge 独占项目（别名表标注 source="curseforge"，如暮色森林）在用户
-   已配置 CurseForge Key 时自动走 CurseForge 通道解析安装。
+   中文别名 → Modrinth 精确匹配（零命中自动转 CurseForge）→ 版本匹配 →
+   依赖闭包 → 输出意图清单。CurseForge 独占项目（别名表标注
+   source="curseforge"，如暮色森林）直接走 CurseForge 通道：已配置 Key 走
+   官方 API，未配置自动走国内镜像（免 key，功能完整）。
    - **多命中**：用 `ask_user` 请用户选择后重试，不要擅自替用户挑。
-   - **零命中且提示需要 CurseForge Key**：如实转述工具返回的申请指引
-     （portal.curseforge.com → 创建应用 → 写入 .env 的 MCHA_CURSEFORGE_KEY），
-     用 `ask_user` 问用户"现在配置（等其粘贴后重试）/ 暂时跳过该 mod"。
+   - **零命中**：两源都没有时工具会如实说明——转述原因，不要假装能装。
    - **依赖不满足**：按错误信息建议调整 MC 版本或换 mod，与用户确认。
 3. `check_plan(..., mods=意图清单)` 部署前复核兼容性（第 9 项）。
 4. `install_mods(server_dir, manifest=意图清单)` 安装（会触发用户确认门）。

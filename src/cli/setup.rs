@@ -234,10 +234,11 @@ fn ask_secret(prompt: &str, existing: Option<&str>) -> anyhow::Result<String> {
 }
 
 /// 可选的 CurseForge Key 步骤：默认跳过；选择配置时给分步申请指引。
+/// 未配置时 CF 通道自动走国内镜像，功能完整可用——此步骤纯粹是官方 API 偏好。
 fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<CfKeyChoice> {
     let status = match existing {
         Some(_) => "已设置（回车保留）",
-        None => "未配置（mod 覆盖仅 Modrinth；暮色森林等 CurseForge 独占 mod 不可自动安装）",
+        None => "未配置（CF 自动走国内镜像，功能完整；配置 Key 可改走官方 API）",
     };
     let configure = dialoguer::Confirm::new()
         .with_prompt(format!("配置 CurseForge API Key？[{status}]"))

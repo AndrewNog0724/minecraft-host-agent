@@ -400,47 +400,41 @@ impl Tool for CheckPlanTool {
                 }
             }
             if !cf_ids.is_empty() {
-                if ctx.curseforge_key.trim().is_empty() {
-                    problems.push(
-                        "清单含 CurseForge 项但 Key 未配置（无法安装，先运行 mcha setup 配置）"
-                            .to_string(),
-                    );
-                } else {
-                    let client = crate::knowledge::upstream::curseforge::CfClient::new(
-                        &ctx.http,
-                        ctx.curseforge_key.clone(),
-                    );
-                    match client.files_by_ids(&cf_ids).await {
-                        Ok(files) => {
-                            for entry in args
-                                .mods
-                                .iter()
-                                .filter(|m| m.source.as_deref() == Some("curseforge"))
-                            {
-                                let Some(fid) = entry.file_id else {
-                                    problems.push(format!(
-                                        "{}（source=curseforge 缺少 file_id）",
-                                        entry.slug
-                                    ));
-                                    continue;
-                                };
-                                match files.iter().find(|f| f.id == fid) {
-                                    Some(file) if file.covers(&args.mc_version, "fabric") => {}
-                                    Some(file) => problems.push(format!(
-                                        "{slug}（文件仅支持 {gvs:?}）",
-                                        slug = entry.slug,
-                                        gvs = file.game_versions
-                                    )),
-                                    None => problems.push(format!(
-                                        "{slug}（文件 {fid} 在 CurseForge 上不存在，清单可能过期）",
-                                        slug = entry.slug,
-                                        fid = fid
-                                    )),
-                                }
+                // CfClient::new 按自动通道选择：无 key 时走国内镜像，复核照常
+                let client = crate::knowledge::upstream::curseforge::CfClient::new(
+                    &ctx.http,
+                    ctx.curseforge_key.clone(),
+                );
+                match client.files_by_ids(&cf_ids).await {
+                    Ok(files) => {
+                        for entry in args
+                            .mods
+                            .iter()
+                            .filter(|m| m.source.as_deref() == Some("curseforge"))
+                        {
+                            let Some(fid) = entry.file_id else {
+                                problems.push(format!(
+                                    "{}（source=curseforge 缺少 file_id）",
+                                    entry.slug
+                                ));
+                                continue;
+                            };
+                            match files.iter().find(|f| f.id == fid) {
+                                Some(file) if file.covers(&args.mc_version, "fabric") => {}
+                                Some(file) => problems.push(format!(
+                                    "{slug}（文件仅支持 {gvs:?}）",
+                                    slug = entry.slug,
+                                    gvs = file.game_versions
+                                )),
+                                None => problems.push(format!(
+                                    "{slug}（文件 {fid} 在 CurseForge 上不存在，清单可能过期）",
+                                    slug = entry.slug,
+                                    fid = fid
+                                )),
                             }
                         }
-                        Err(reason) => problems.push(format!("CurseForge 复核失败：{reason}")),
                     }
+                    Err(reason) => problems.push(format!("CurseForge 复核失败：{reason}")),
                 }
             }
 
@@ -454,9 +448,7 @@ impl Tool for CheckPlanTool {
                     ),
                 ));
             } else if problems.iter().any(|p| {
-                !p.starts_with("Modrinth 复核失败")
-                    && !p.starts_with("CurseForge 复核失败")
-                    && !p.contains("Key 未配置")
+                !p.starts_with("Modrinth 复核失败") && !p.starts_with("CurseForge 复核失败")
             }) {
                 items.push(Item::fail(
                     "mods_compat",

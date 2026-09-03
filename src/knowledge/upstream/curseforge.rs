@@ -1,13 +1,18 @@
-//! CurseForge 官方 API v1 客户端（mod 双源扩展；设计 §8.12）。
+//! CurseForge API v1 客户端（mod 双源扩展；设计 §8.12）。
 //!
-//! key 为每用户一次性可选配置（`.env` 的 `MCHA_CURSEFORGE_KEY`，随工具上下
-//! 文下发，不入仓库）。端点：`POST /v1/mods/search`（gameId=432 + Fabric 过
-//! 滤）、`GET /v1/mods/{id}`、`GET /v1/mods/{id}/files`、`POST /v1/mods/files`
+//! **双基址**：官方（`api.curseforge.com`，需 key）与国内镜像（`mod.mcimirror.top`，
+//! 开源公益项目 mcmod-info-mirror，免 key）。`CfClient::new` 按用户是否配置
+//! `MCHA_CURSEFORGE_KEY`（`.env`，随工具上下文下发，不入仓库）自动选择——
+//! 有 key 走官方，无 key 自动走镜像，CF 独占 mod 开箱可用。镜像与官方 API
+//! 同构（实测逐端点核验 + sha1 与实文件一致）；轨迹中如实标注通道。
+//!
+//! 端点：`GET /v1/mods/search`（官方文档原生支持；镜像仅支持 GET）、
+//! `GET /v1/mods/{id}`、`GET /v1/mods/{id}/files`、`POST /v1/mods/files`
 //! （按 fileId 批量重取，安装期权威数据源）。哈希为 sha1 单哈希（algo=1），
 //! 强度低于 Modrinth 双哈希——输出轨迹如实标注。
 //!
-//! 已裁定排除的替代路径（答辩备查）：中心代理（违反条款 / 配额单桶 / 单点 /
-//! key 公开）与网页抓取（Cloudflare / 无权威哈希 / 脆弱）。
+//! 已裁定排除的替代路径（答辩备查）：自建 key 池中心代理（违反条款 / 配额单
+//! 桶 / 单点 / key 公开）与网页抓取（Cloudflare / 无权威哈希 / 脆弱）。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -16,12 +21,19 @@ use super::{read_json, urlencode};
 
 /// 官方 API 基址。
 pub const OFFICIAL_API: &str = "https://api.curseforge.com";
+/// 国内镜像基址（开源公益项目 mcmod-info-mirror；与官方 API v1 同构，免 key）。
+pub const MIRROR_API: &str = "https://mod.mcimirror.top/curseforge";
 /// Minecraft 的 gameId（CurseForge 平台唯一）。
 pub const MINECRAFT_GAME_ID: i64 = 432;
 /// Fabric 的 modLoaderType 枚举值。
 pub const FABRIC_LOADER_TYPE: i64 = 4;
-/// 下载 CDN 域（对 API 下发 `downloadUrl` 的域强校验）。
-pub const CDN_HOSTS: &[&str] = &["mediafilez.forgecdn.net", "media.forgecdn.net"];
+/// 下载 CDN 域（对 API 下发 `downloadUrl` 的域强校验；官方 API 实测返回
+/// edge 域，重定向落到 mediafilez 域，两者同入白名单）。
+pub const CDN_HOSTS: &[&str] = &[
+    "edge.forgecdn.net",
+    "mediafilez.forgecdn.net",
+    "media.forgecdn.net",
+];
 
 /// 单请求超时。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -120,26 +132,6 @@ impl CfFile {
 }
 
 #[derive(Debug, Serialize)]
-struct SearchBody<'a> {
-    #[serde(rename = "gameId")]
-    game_id: i64,
-    #[serde(rename = "searchFilter")]
-    search_filter: &'a str,
-    #[serde(rename = "gameVersion")]
-    game_version: &'a str,
-    #[serde(rename = "modLoaderType")]
-    mod_loader_type: i64,
-    pagination: Pagination,
-}
-
-#[derive(Debug, Serialize)]
-struct Pagination {
-    index: i64,
-    #[serde(rename = "pageSize")]
-    page_size: i64,
-}
-
-#[derive(Debug, Serialize)]
 struct FilesBody {
     #[serde(rename = "fileIds")]
     file_ids: Vec<i64>,
@@ -164,43 +156,64 @@ pub struct CfClient<'a> {
     http: &'a reqwest::Client,
     api_base: String,
     key: String,
+    /// 是否走国内镜像（无 key 自动切换；轨迹标注用）。
+    mirror: bool,
 }
 
 impl<'a> CfClient<'a> {
+    /// 按用户配置自动选择通道：有 key → 官方 API；无 key → 国内镜像（免 key）。
     pub fn new(http: &'a reqwest::Client, key: String) -> Self {
+        let mirror = key.trim().is_empty();
         Self {
             http,
-            api_base: OFFICIAL_API.to_string(),
+            api_base: if mirror {
+                MIRROR_API.to_string()
+            } else {
+                OFFICIAL_API.to_string()
+            },
             key,
+            mirror,
         }
     }
 
-    /// 测试注入：自定义 API 基址（本地 mock；key 随意）。
+    /// 测试注入：自定义 API 基址（本地 mock；key 可空）。
     #[allow(dead_code)]
     pub fn with_base(http: &'a reqwest::Client, api_base: String, key: String) -> Self {
         Self {
             http,
             api_base: api_base.trim_end_matches('/').to_string(),
             key,
+            mirror: false,
+        }
+    }
+
+    /// 通道标注（轨迹/错误消息中如实呈现数据来源）。
+    fn channel(&self) -> &'static str {
+        if self.mirror {
+            "经社区镜像"
+        } else {
+            "官方 API"
         }
     }
 
     async fn get(&self, url: &str, what: &str) -> Result<reqwest::Response, String> {
-        let response = tokio::time::timeout(
-            REQUEST_TIMEOUT,
-            self.http
-                .get(url)
-                .header("x-api-key", &self.key)
-                .header("Accept", "application/json")
-                .send(),
-        )
-        .await
-        .map_err(|_| format!("请求超时（{url}）"))?
-        .map_err(|err| format!("请求失败（{url}）：{err}"))?;
+        let mut request = self.http.get(url).header("Accept", "application/json");
+        if !self.key.trim().is_empty() {
+            request = request.header("x-api-key", self.key.trim());
+        }
+        let response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
+            .await
+            .map_err(|_| format!("请求超时（{url}）"))?
+            .map_err(|err| format!("请求失败（{url}）：{err}"))?;
         let status = response.status();
         if status.as_u16() == 403 {
             return Err(format!(
-                "{what} 被拒绝（HTTP 403）：CurseForge Key 无效或未配置"
+                "{what} 被拒绝（HTTP 403）：{}",
+                if self.mirror {
+                    "镜像拒绝访问，请稍后重试或改用官方 Key 通道"
+                } else {
+                    "CurseForge Key 无效或未配置"
+                }
             ));
         }
         if status.as_u16() == 429 {
@@ -215,22 +228,23 @@ impl<'a> CfClient<'a> {
         what: &str,
         body: &B,
     ) -> Result<T, String> {
-        let response = tokio::time::timeout(
-            REQUEST_TIMEOUT,
-            self.http
-                .post(url)
-                .header("x-api-key", &self.key)
-                .header("Accept", "application/json")
-                .json(body)
-                .send(),
-        )
-        .await
-        .map_err(|_| format!("请求超时（{url}）"))?
-        .map_err(|err| format!("请求失败（{url}）：{err}"))?;
+        let mut request = self.http.post(url).header("Accept", "application/json");
+        if !self.key.trim().is_empty() {
+            request = request.header("x-api-key", self.key.trim());
+        }
+        let response = tokio::time::timeout(REQUEST_TIMEOUT, request.json(body).send())
+            .await
+            .map_err(|_| format!("请求超时（{url}）"))?
+            .map_err(|err| format!("请求失败（{url}）：{err}"))?;
         let status = response.status();
         if status.as_u16() == 403 {
             return Err(format!(
-                "{what} 被拒绝（HTTP 403）：CurseForge Key 无效或未配置"
+                "{what} 被拒绝（HTTP 403）：{}",
+                if self.mirror {
+                    "镜像拒绝访问，请稍后重试或改用官方 Key 通道"
+                } else {
+                    "CurseForge Key 无效或未配置"
+                }
             ));
         }
         if status.as_u16() == 429 {
@@ -240,40 +254,52 @@ impl<'a> CfClient<'a> {
     }
 
     /// 检索 mod（名称 / slug 过滤 + MC 版本 + Fabric）。
+    ///
+    /// 统一用 `GET /v1/mods/search`：官方文档原生支持；镜像仅支持 GET。
     pub async fn search(
         &self,
         filter: &str,
         game_version: &str,
         limit: usize,
     ) -> Result<Vec<CfProject>, String> {
-        let url = format!("{}/v1/mods/search", self.api_base);
-        let body = SearchBody {
-            game_id: MINECRAFT_GAME_ID,
-            search_filter: filter,
-            game_version,
-            mod_loader_type: FABRIC_LOADER_TYPE,
-            pagination: Pagination {
-                index: 0,
-                page_size: limit.clamp(1, 50) as i64,
-            },
-        };
-        let response: SearchResponse = self
-            .post_json(&url, &format!("CurseForge 检索（{filter}）"), &body)
+        let url = format!(
+            "{}/v1/mods/search?gameId={}&searchFilter={}&gameVersion={}&modLoaderType={}&index=0&pageSize={}",
+            self.api_base,
+            MINECRAFT_GAME_ID,
+            urlencode(filter),
+            urlencode(game_version),
+            FABRIC_LOADER_TYPE,
+            limit.clamp(1, 50)
+        );
+        let response = self
+            .get(
+                &url,
+                &format!("CurseForge 检索（{filter}）· {}", self.channel()),
+            )
             .await?;
-        Ok(response.data)
+        if response.status().as_u16() == 404 {
+            return Err(format!(
+                "CurseForge 检索端点不可用（HTTP 404，通道：{}）",
+                self.channel()
+            ));
+        }
+        let parsed: SearchResponse = read_json(
+            response,
+            &format!("CurseForge 检索（{filter}）· {}", self.channel()),
+        )
+        .await?;
+        Ok(parsed.data)
     }
 
     /// 项目详情（依赖闭包回查 slug 用）。
     pub async fn mod_detail(&self, mod_id: i64) -> Result<CfProject, String> {
         let url = format!("{}/v1/mods/{}", self.api_base, mod_id);
-        let response = self
-            .get(&url, &format!("CurseForge 项目（{mod_id}）"))
-            .await?;
+        let what = format!("CurseForge 项目（{mod_id}）· {}", self.channel());
+        let response = self.get(&url, &what).await?;
         if response.status().as_u16() == 404 {
             return Err(format!("CurseForge 上不存在项目 {mod_id}"));
         }
-        let parsed: DataOne<CfProject> =
-            read_json(response, &format!("CurseForge 项目（{mod_id}）")).await?;
+        let parsed: DataOne<CfProject> = read_json(response, &what).await?;
         Ok(parsed.data)
     }
 
@@ -286,14 +312,12 @@ impl<'a> CfClient<'a> {
             urlencode(game_version),
             FABRIC_LOADER_TYPE
         );
-        let response = self
-            .get(&url, &format!("CurseForge 文件列表（{mod_id}）"))
-            .await?;
+        let what = format!("CurseForge 文件列表（{mod_id}）· {}", self.channel());
+        let response = self.get(&url, &what).await?;
         if response.status().as_u16() == 404 {
             return Err(format!("CurseForge 上不存在项目 {mod_id}"));
         }
-        let parsed: DataVec<CfFile> =
-            read_json(response, &format!("CurseForge 文件列表（{mod_id}）")).await?;
+        let parsed: DataVec<CfFile> = read_json(response, &what).await?;
         Ok(parsed.data)
     }
 
@@ -306,7 +330,7 @@ impl<'a> CfClient<'a> {
         let parsed: DataVec<CfFile> = self
             .post_json(
                 &url,
-                "CurseForge 批量文件",
+                &format!("CurseForge 批量文件 · {}", self.channel()),
                 &FilesBody {
                     file_ids: ids.to_vec(),
                 },
@@ -420,5 +444,68 @@ mod tests {
         let client = CfClient::with_base(&http, base, "wrong".to_string());
         let err = client.search("x", "1.21.1", 5).await.unwrap_err();
         assert!(err.contains("403"), "{err}");
+    }
+
+    #[test]
+    fn channel_selection_by_key_presence() {
+        let http = reqwest::Client::new();
+        // 有 key → 官方基址；无 key → 国内镜像基址
+        let official = CfClient::new(&http, "some-key".to_string());
+        assert_eq!(official.api_base, OFFICIAL_API);
+        assert_eq!(official.channel(), "官方 API");
+        let mirror = CfClient::new(&http, String::new());
+        assert_eq!(mirror.api_base, MIRROR_API);
+        assert_eq!(mirror.channel(), "经社区镜像");
+        // 测试注入基址不受 key 有无影响
+        let custom = CfClient::with_base(&http, "http://127.0.0.1:9/".into(), String::new());
+        assert_eq!(custom.api_base, "http://127.0.0.1:9");
+        assert_eq!(custom.channel(), "官方 API");
+    }
+
+    /// 镜像通道 mock：免 key（不带 x-api-key 也放行）；POST 一律 404
+    ///（镜像不支持 POST search 的回归护栏）。
+    fn spawn_mirror_mock() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let search_body = r#"{"data":[{"id":227639,"slug":"the-twilight-forest","name":"The Twilight Forest","summary":"一座魔法森林","download_count":9}]}"#;
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 16384];
+                let _ = stream.read(&mut buf);
+                let request = String::from_utf8_lossy(&buf);
+                let method = request.split_whitespace().next().unwrap_or("");
+                let target = request.split_whitespace().nth(1).unwrap_or("");
+                let (status, body) = if method == "POST" {
+                    ("404 Not Found", String::new())
+                } else if target.starts_with("/v1/mods/search") {
+                    ("200 OK", search_body.to_string())
+                } else {
+                    ("404 Not Found", String::new())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn mirror_channel_get_search_without_key() {
+        let base = spawn_mirror_mock();
+        let http = reqwest::Client::new();
+        let client = CfClient::with_base(&http, base, String::new());
+        let projects = client
+            .search("twilight forest", "1.21.1", 10)
+            .await
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].slug, "the-twilight-forest");
+        // 镜像不支持 POST search：批量端点应得到 404 的结构化报错而非 panic
+        let err = client.files_by_ids(&[5566]).await.unwrap_err();
+        assert!(err.contains("失败") || err.contains("404"), "{err}");
     }
 }

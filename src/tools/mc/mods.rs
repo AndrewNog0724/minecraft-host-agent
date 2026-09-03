@@ -128,22 +128,14 @@ pub(crate) fn modrinth_client<'a>(ctx: &'a ToolCtx) -> ModrinthClient<'a> {
     }
 }
 
-/// CurseForge 客户端：key 未配置返回结构化错误（含申请指引）。
-fn cf_client(ctx: &ToolCtx) -> Result<CfClient<'_>, String> {
-    if ctx.curseforge_key.trim().is_empty() {
-        return Err(
-            "该 mod 仅 CurseForge 收录，需要 CurseForge API Key（免费，一次性）：\n\
-             1. 打开 https://portal.curseforge.com/ 登录\n\
-             2. API Keys → 创建应用，复制 Key\n\
-             3. 写入数据目录 .env 的 MCHA_CURSEFORGE_KEY=（或运行 mcha setup 可选步骤）\n\
-             配置后重试即可；也可以 ask_user 询问是否先跳过，仅安装 Modrinth 部分"
-                .to_string(),
-        );
-    }
-    Ok(match ctx.network.curseforge_api.trim() {
+/// CurseForge 客户端：`[network] curseforge_api` 非空时指向自定义基址
+/// （测试注入 mock / 高级用户自建代理）；默认按 key 有无自动选通道——
+/// 有 key 走官方 API，无 key 自动走国内镜像（§8.12）。
+fn cf_client(ctx: &ToolCtx) -> CfClient<'_> {
+    match ctx.network.curseforge_api.trim() {
         "" => CfClient::new(&ctx.http, ctx.curseforge_key.clone()),
         base => CfClient::with_base(&ctx.http, base.to_string(), ctx.curseforge_key.clone()),
-    })
+    }
 }
 
 fn base_host(base: &str) -> Option<String> {
@@ -353,26 +345,14 @@ impl Tool for SearchModsTool {
         // ① 别名命中（Modrinth 源）→ 直接定位项目（免检索歧义）
         if let Some(entry) = aliases.hit(&args.query) {
             if entry.source() == "curseforge" {
-                return match cf_client(ctx) {
-                    Err(reason) => Ok(ToolOutcome::err(format!(
-                        "「{query}」为 CurseForge 独占项目（{slug}）：{reason}",
-                        query = args.query,
-                        slug = entry.slug
-                    ))),
-                    Ok(cf) => {
-                        let outcome = cf_search_detail(
-                            &cf,
-                            &entry.slug,
-                            &args.query,
-                            args.mc_version.as_deref(),
-                        )
+                let cf = cf_client(ctx);
+                let outcome =
+                    cf_search_detail(&cf, &entry.slug, &args.query, args.mc_version.as_deref())
                         .await;
-                        Ok(match outcome {
-                            Ok(content) => ToolOutcome::ok(content),
-                            Err(reason) => ToolOutcome::err(reason),
-                        })
-                    }
-                };
+                return Ok(match outcome {
+                    Ok(content) => ToolOutcome::ok(content),
+                    Err(reason) => ToolOutcome::err(reason),
+                });
             }
             return match client.project(&entry.slug).await {
                 Ok(project) => {
@@ -642,7 +622,7 @@ async fn resolve_one(
         let via_alias = true;
         return match entry.source() {
             "curseforge" => {
-                let cf = cf_client(ctx).map_err(|hint| ResolveFail::not_found(name, hint))?;
+                let cf = cf_client(ctx);
                 let (slug, file, mut reason) =
                     cf_resolve_exact(&cf, &entry.slug, mc_version).await?;
                 if via_alias {
@@ -707,25 +687,15 @@ async fn resolve_one(
     let modrinth_slug = match candidates.as_slice() {
         [one] => one.slug.clone(),
         [] => {
-            // ④ 零命中 → CurseForge 降级（key 已配置时）；未配置则如实说明
-            return match cf_client(ctx) {
-                Err(cf_hint) => Err(ResolveFail::not_found(
-                    name,
-                    format!(
-                        "Modrinth 无精确命中（检索到 {total} 条相关，均不同名）。{cf_hint}",
-                        total = hits.len()
-                    ),
-                )),
-                Ok(cf) => {
-                    let (slug, file, reason) = cf_resolve_exact(&cf, name, mc_version).await?;
-                    Ok((
-                        Source::Curseforge,
-                        slug,
-                        ResolvedVersion::Curseforge(file),
-                        reason,
-                    ))
-                }
-            };
+            // ④ 零命中 → 自动转 CurseForge（官方或镜像通道；检索失败如实报错）
+            let cf = cf_client(ctx);
+            let (slug, file, reason) = cf_resolve_exact(&cf, name, mc_version).await?;
+            return Ok((
+                Source::Curseforge,
+                slug,
+                ResolvedVersion::Curseforge(file),
+                reason,
+            ));
         }
         many => {
             return Err(ResolveFail::Ambiguous {
@@ -817,8 +787,8 @@ async fn resolve_with_closure(
         }
     }
 
-    // 无 key 时 CF 依赖不可解析（root 不可能来自 CF）
-    let cf = cf_client(ctx).ok();
+    // CF 客户端始终可用（无 key 自动走镜像），CF 依赖可正常解析
+    let cf = cf_client(ctx);
     let client = modrinth_client(ctx);
 
     while let Some((parent_slug, depth)) = queue.pop_front() {
@@ -864,11 +834,6 @@ async fn resolve_with_closure(
                     queue.push_back((slug, depth + 1));
                 }
                 DepRef::Curseforge(mid) => {
-                    let Some(cf) = cf.as_ref() else {
-                        return Err(format!(
-                            "{parent_slug} 的必需依赖（CurseForge {mid}）需要 CurseForge Key 才能解析；请配置后重试"
-                        ));
-                    };
                     let files = cf.mod_files(mid, mc_version).await.map_err(|reason| {
                         format!("查询依赖（{parent_slug} 的 CurseForge 依赖）失败：{reason}")
                     })?;
@@ -1153,8 +1118,7 @@ async fn install_entry(
                     entry.slug
                 )
             })?;
-            let client =
-                cf_client(ctx).map_err(|reason| format!("{slug}：{reason}", slug = entry.slug))?;
+            let client = cf_client(ctx);
             let files = client
                 .files_by_ids(&[file_id])
                 .await
@@ -1405,20 +1369,21 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn curseforge_alias_without_key_gives_guidance() {
+    async fn curseforge_alias_without_key_uses_mirror_channel() {
         let root = tempfile::tempdir().unwrap();
-        let ctx = test_ctx(root.path(), "http://127.0.0.1:1");
+        let base = spawn_cf_mock();
+        // 无 key + mock 基址：别名命中暮色森林 → 直接走 CF 通道（镜像语义）
+        let ctx = test_ctx_with_key(root.path(), "", &base, "");
         let outcome = SearchModsTool
             .run(serde_json::json!({"query": "暮色森林"}), &ctx)
             .await
             .unwrap();
-        let ToolOutcome::Err { error } = outcome else {
-            panic!("未配置 key 应结构化报错：{outcome:?}");
+        let ToolOutcome::Ok { content } = outcome else {
+            panic!("无 key 时 CF 通道应可用（镜像语义）：{outcome:?}");
         };
-        assert!(error.contains("portal.curseforge.com"), "{error}");
-        assert!(error.contains("MCHA_CURSEFORGE_KEY"), "{error}");
+        assert!(content.contains("the-twilight-forest"), "{content}");
 
-        // resolve 同样给指引
+        // resolve 同样闭环
         let outcome = ResolveModsTool
             .run(
                 serde_json::json!({"mods": ["暮色森林"], "mc_version": "1.21.1", "loader": "fabric"}),
@@ -1426,10 +1391,31 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        let ToolOutcome::Err { error } = outcome else {
-            panic!("resolve 未配置 key 应结构化报错：{outcome:?}");
+        let ToolOutcome::Ok { content } = outcome else {
+            panic!("resolve 无 key 应走镜像闭环：{outcome:?}");
         };
-        assert!(error.contains("portal.curseforge.com"), "{error}");
+        assert!(content.contains("curseforge"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn resolve_falls_back_to_cf_on_modrinth_miss() {
+        // Modrinth 检索有结果但不同名（零精确命中）→ 自动转 CF 解析暮色森林
+        let root = tempfile::tempdir().unwrap();
+        let mr_mock = spawn_modrinth_mock();
+        let cf_mock = spawn_cf_mock();
+        let ctx = test_ctx_with_key(root.path(), &mr_mock, &cf_mock, "");
+        let outcome = ResolveModsTool
+            .run(
+                serde_json::json!({"mods": ["Twilight Forest"], "mc_version": "1.21.1", "loader": "fabric"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let ToolOutcome::Ok { content } = outcome else {
+            panic!("Modrinth 零命中应转 CF 解析：{outcome:?}");
+        };
+        assert!(content.contains("the-twilight-forest"), "{content}");
+        assert!(content.contains("curseforge"), "{content}");
     }
 
     /// 本地 mock Modrinth：jei（无依赖）与 sodium（依赖 jei）。
@@ -1857,16 +1843,17 @@ pub(crate) mod tests {
         assert!(outcome.is_ok(), "live install 失败：{outcome:?}");
     }
 
-    /// 真实上游冒烟：暮色森林 ← CurseForge（需要 .env 配置
-    /// MCHA_CURSEFORGE_KEY 后以 `cargo test --ignored` 运行）。
+    /// 真实上游冒烟：暮色森林 ← CurseForge。无 key 走国内镜像（默认通道），
+    /// 有 key 走官方 API——两种通道都应闭环（`cargo test --ignored`）。
     #[tokio::test]
-    #[ignore = "真实上游冒烟（需 CurseForge Key）：cargo test --ignored"]
+    #[ignore = "真实上游冒烟：cargo test --ignored"]
     async fn live_resolve_twilight_forest_from_curseforge() {
         let key = std::env::var("MCHA_CURSEFORGE_KEY").unwrap_or_default();
-        if key.trim().is_empty() {
-            eprintln!("跳过：未配置 MCHA_CURSEFORGE_KEY（配置后本冒烟才真实执行）");
-            return;
-        }
+        let channel = if key.trim().is_empty() {
+            "国内镜像（无 key）"
+        } else {
+            "官方 API"
+        };
         let root = tempfile::tempdir().unwrap();
         let ctx = test_ctx_with_key(root.path(), "", "", &key);
         let outcome = ResolveModsTool
@@ -1877,9 +1864,42 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let ToolOutcome::Ok { content } = outcome else {
-            panic!("live CF resolve 失败：{outcome:?}");
+            panic!("live CF resolve（{channel}）失败：{outcome:?}");
         };
         assert!(content.contains("the-twilight-forest"), "{content}");
         assert!(content.contains("curseforge"), "{content}");
+        eprintln!("暮色森林解析成功（通道：{channel}）");
+    }
+
+    /// 真实上游冒烟：暮色森林镜像通道安装闭环（resolve → install 落盘 +
+    /// sha1 校验；无 key，走国内镜像）。
+    #[tokio::test]
+    #[ignore = "真实上游冒烟：cargo test --ignored"]
+    async fn live_install_twilight_forest_via_mirror() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(root.path(), "");
+        let resolved = ResolveModsTool
+            .run(
+                serde_json::json!({"mods": ["暮色森林"], "mc_version": "1.21.1", "loader": "fabric"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let ToolOutcome::Ok { content } = resolved else {
+            panic!("live 镜像 resolve 失败：{resolved:?}");
+        };
+        let manifest_line = content.lines().last().unwrap();
+        let manifest: Vec<ManifestEntry> = serde_json::from_str(manifest_line).unwrap();
+        assert_eq!(manifest[0].source, "curseforge");
+        let outcome = InstallModsTool
+            .run(
+                serde_json::json!({"server_dir": "server", "manifest": manifest}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(outcome.is_ok(), "live 镜像 install 失败：{outcome:?}");
+        let jar = root.path().join("server/mods").read_dir().unwrap().count();
+        assert!(jar >= 1, "mods 目录应有文件");
     }
 }

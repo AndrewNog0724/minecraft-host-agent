@@ -108,7 +108,7 @@ $ mcha                          # 进入交互会话（mcha new "…" 为预填�
   ⎿ ✓ 兼容：1.21.1 ← Fabric 0.16，需 Java 21
 ⏺ resolve_mod(mods=["暮色森林", "JEI"], mc="1.21.1")
   ⎿ ✓ 暮色森林 ← CurseForge（the-twilight-forest）；JEI ← Modrinth；依赖已带出
-    （未配置 CurseForge Key 时：如实说明并给申请指引，或仅装 Modrinth 部分）
+    （未配置 CurseForge Key 时：CF 通道自动走国内镜像，暮色森林照常闭环）
 ⏺ ask_user("服务器要给谁连？", [同一局域网 | 跨网络·有公网IP | 跨网络·无公网IP])
   ⎿ ← 跨网络·无公网IP                                           ← 用户回答回显
 
@@ -384,8 +384,8 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 - **Profile（部署档案）**：部署方案的结构化快照（方案 + 产物清单 + 时间戳），由 Agent 经 `save_profile` 工具落盘、`load_profile` 读回会话上下文；它是记录产物与复用载体（US3），不是流程关卡。字段定稿：`profile_id`（时间戳短 id，如 `20260903-142530`）、`created_at`、`account`（Online / Offline{whitelist} / Hybrid{auth}）、`software`（Vanilla / Spigot / Paper{build} / Fabric{loader}）、`mc_version`、`java`（required_major + runtime 路径）、`jvm_memory_mb`、`mods`（[{slug, version_id, file_name, sha1}]）、`network`（Lan / Direct{port} / Tunnel{provider, endpoint}）、`world`（New / Existing{path}）、`artifacts`（[{kind, path}]：jar / 脚本 / mods 目录 / 日志等实际产物）、`notes`（风险提示）。落盘 `~/.mcha/profiles/<profile_id>.json`，存取工具细节见 §8.12。
 - `config`（R3，配置与首次启动）：
   - **存储**：`~/.mcha/config.toml`（除 Key 外的一切）+ `~/.mcha/.env`（各类 Key：`MCHA_API_KEY` 为 LLM Key，可用 `model.api_key_env` 改名；`MCHA_CURSEFORGE_KEY` 为 CurseForge API Key，可选）；Key 永不写入 config.toml 与仓库。
-  - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。**向导可重复运行**：`mcha setup` 读取已有配置作为默认值（回车保留当前值），检测到已有 Key 时显示"已设置，回车保留"；`.env` 采用**合并写入**（只更新被修改的项，其余 Key 原样保留）。**可选步骤**：向导尾部提供 CurseForge API Key 配置（默认跳过；选择配置时给出分步申请指引）。
-  - **启动自检（非阻断）**：交互会话启动时一次性检查可选项配置状态，对未配置项给出一条紧凑提示（如 CurseForge Key 缺失 → "mod 覆盖仅 Modrinth，配置方法：运行 mcha setup"）；不强制、不重复提醒、全部就绪时不输出额外内容。
+  - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。**向导可重复运行**：`mcha setup` 读取已有配置作为默认值（回车保留当前值），检测到已有 Key 时显示"已设置，回车保留"；`.env` 采用**合并写入**（只更新被修改的项，其余 Key 原样保留）。**可选步骤**：向导尾部提供 CurseForge API Key 配置（默认跳过；未配置时 CF 通道自动使用国内镜像，功能完整可用；选择配置时给出分步申请指引）。
+  - **启动自检（非阻断）**：交互会话启动时一次性检查可选项配置状态，对未配置项给出一条紧凑提示（如 CurseForge Key 缺失 → "CF 走国内镜像通道，如需官方 API 可运行 mcha setup 配置 Key"）；不强制、不重复提醒、全部就绪时不输出额外内容。
   - **可点击链接**：向导等用户直出文本中的网址按终端能力渲染——支持 OSC 8 的终端（Windows Terminal / iTerm2 / VTE 系 / mintty 等，白名单检测）输出显式超链接，其余回退纯文本 URL（现代终端自动识别）；`MCHA_NO_HYPERLINK=1` 强制关闭（与 `MCHA_ASCII` 同一降级约定）。工具回传 Agent 的文本内保持纯 URL，不夹带转义序列。
   - **配置文件全景**：
 
@@ -411,7 +411,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
     [network]                   # 下载镜像（§8.10）
     mojang_mirror = "bmclapi"   # bmclapi | off | 自定义基础URL
     adoptium_mirror = "tuna"    # tuna | off
-                                # CurseForge 需在 .env 配 MCHA_CURSEFORGE_KEY（免费申请，可选；§8.12）
+                                # CurseForge：已配 MCHA_CURSEFORGE_KEY 走官方 API；未配置自动走国内镜像（§8.12）
 
     [retrieval]                 # wiki 检索来源注册（§8.11）
     mcwiki = "https://wiki.biligame.com/mc/api.php"
@@ -543,7 +543,7 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 
 ### 8.12 mod 场景实现细节
 
-本节是 FR-12 / FR-13 / FR-16 与 FR-20 mcmod 后端的技术细则。范围裁定：mod 自动化落地 **Fabric**（`fetch_server_jar` 已支持），Forge 维持指导模式，NeoForge 不在本期；mod 数据源为 **Modrinth + CurseForge 双源**（Modrinth 为主，CurseForge 为可选扩展通道，见下）。FR-12（清单安装）与 FR-13（自然语言推荐）共用同一套工具，差别只在入口：前者用户给清单直接 resolve，后者 Agent 先检索推荐、经确认再 resolve。
+本节是 FR-12 / FR-13 / FR-16 与 FR-20 mcmod 后端的技术细则。范围裁定：mod 自动化落地 **Fabric**（`fetch_server_jar` 已支持），Forge 维持指导模式，NeoForge 不在本期；mod 数据源为 **Modrinth + CurseForge 双源**（Modrinth 为主，CurseForge 为扩展通道——官方 API 与国内镜像双基址，见下）。FR-12（清单安装）与 FR-13（自然语言推荐）共用同一套工具，差别只在入口：前者用户给清单直接 resolve，后者 Agent 先检索推荐、经确认再 resolve。
 
 **Modrinth 上游客户端（`knowledge/upstream/modrinth.rs`）**
 
@@ -551,19 +551,19 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 - 端点：`GET /v2/search`（facets：`project_type:mod`，可选 `versions:<mc>` / `categories:<loader>`）；`GET /v2/project/{slug}/version`（`game_versions` / `loaders` 查询参数过滤）；`GET /v2/versions?ids=[..]` 批量重取（安装期权威数据源）。
 - 版本文件结构：`url` / `filename` / `hashes.sha1` / `hashes.sha512` / `size`；依赖经 `dependencies`（`project_id` + `dependency_type`，仅 `required` 入闭包）。
 
-**CurseForge 通道（可选扩展，用户自配 key）**
+**CurseForge 通道（官方 / 国内镜像双基址，免 key 可用）**
 
-- **官方 API v1**（`api.curseforge.com`，请求头 `x-api-key`）——免费但需用户在 CurseForge 开发者门户注册应用获取 key。key 为**每用户一次性可选配置**：存 `.env`（`MCHA_CURSEFORGE_KEY`，永不入 config.toml 与仓库），环境装配时读取一次、随工具上下文下发；其条款与配额模式**裁定排除中心代理**（所有用户共享开发者 key 的转发服务：违反条款、配额单桶、单点运维、key 实质公开）与**网页抓取**（Cloudflare 反爬、页面无权威哈希、结构脆弱——无官方 API 才允许抓取，如 getbukkit→Spigot 的逃生舱先例）。
-- **未配置 key 时如实降级**：resolve 零命中且 key 缺失 → 结构化返回"该 mod 仅 CurseForge 收录，当前未配置 CurseForge Key"+ 分步申请指引（同樱花frp token 的引导模式，`ask_user` 可选"跳过仅用 Modrinth"）；已收录 Modrinth 的 mod 完全不受影响。key 亦可在 `mcha setup` 的可选步骤或启动自检提示中按指引配置。
-- 端点：`POST /v1/mods/search`（`gameId=432` + `searchFilter` + `gameVersion` + `modLoaderType=Fabric`）；`GET /v1/mods/{modId}`（详情）；`GET /v1/mods/{modId}/files`（按 `gameVersion` / `modLoaderType` 过滤）；`POST /v1/mods/files`（按 fileId 批量重取，安装期权威数据源）。
+- **官方 API v1**（`api.curseforge.com`，请求头 `x-api-key`）——免费但需用户在 CurseForge 开发者门户注册应用获取 key；key 为**每用户一次性可选配置**：存 `.env`（`MCHA_CURSEFORGE_KEY`，永不入 config.toml 与仓库），环境装配时读取一次、随工具上下文下发。自建 key 池转发服务与网页抓取**裁定排除**（自建转发：违反条款、配额单桶、单点运维、key 实质公开；抓取：Cloudflare 反爬、页面无权威哈希、结构脆弱——无官方 API 才允许抓取，如 getbukkit→Spigot 的逃生舱先例）。
+- **国内镜像基址（无 key 默认通道）**：`https://mod.mcimirror.top/curseforge`——开源公益项目 mcmod-info-mirror，国内启动器生态共用；与官方 CF API v1 **同构**（检索 / 详情 / 文件列表 / 批量重取端点与 schema 一致，免 key，实测 sha1 与实文件核验一致）。**通道选择**：已配 key → 官方；未配 key → 自动走镜像，CF 独占 mod 开箱可用（官方 API 与 forgecdn 下载域在国内网络可达，镜像解决的是"申请 key 依赖的门户不可达"与"key 门槛"）。使用既有公益镜像与自建 key 池转发性质不同：不持有他人 key、不共享配额桶、数据为官方 API 透传。轨迹中如实标注"经社区镜像"。
+- **端点兼容**：检索统一用 `GET /v1/mods/search`（官方文档原生支持；镜像仅支持 GET，POST 返回 404）——官方 / 镜像同一套代码通吃。其余端点：`GET /v1/mods/{modId}`（详情）；`GET /v1/mods/{modId}/files`（按 `gameVersion` / `modLoaderType` 过滤，镜像过滤参数实测生效）；`POST /v1/mods/files`（按 fileId 批量重取，安装期权威数据源）——实测镜像全部兼容。
 - 文件结构：`fileName` / `downloadUrl` / `fileLength` / `hashes`（**sha1 单哈希**，Modrinth 双哈希；输出轨迹如实标注哈希强度差异）；`dependencies`（`relationType=required` 入闭包）；`gameVersions`（含 MC 版本与加载器名，兼容复核用）。`downloadUrl` 为 null（项目未开放第三方分发）时结构化报错并指向手动下载页，不假装能装。
-- **限额自律**：请求间最小间隔 + 批量端点优先（key 级配额较 Modrinth 紧）。
-- 下载域白名单：`mediafilez.forgecdn.net` / `media.forgecdn.net`（§12）。
+- **限额自律**：官方 key 级配额较 Modrinth 紧——请求间最小间隔 + 批量端点优先；镜像为公益服务同样节流（与 Modrinth 同一社区礼仪）。
+- 下载域白名单：`edge.forgecdn.net` / `mediafilez.forgecdn.net` / `media.forgecdn.net`（§12；API 下发 `downloadUrl` 为 edge 域，重定向落到 mediafilez 域，两者同入白名单）。
 
 **双源解析流程（Modrinth 优先，自动降级）**
 
-1. 别名表命中且标注 `source="curseforge"`（如暮色森林）→ 直接走 CF 检索（key 未配置时给申请指引）；
-2. 其余先走 Modrinth（别名直查 / 精确匹配）；**零命中且 key 已配置** → 自动转 CF 检索（slug / 名称精确匹配，`gameVersion` + Fabric 过滤）；
+1. 别名表命中且标注 `source="curseforge"`（如暮色森林）→ 直接走 CF 检索（官方或镜像基址，key 有无自动选择）；
+2. 其余先走 Modrinth（别名直查 / 精确匹配）；**零命中** → 自动转 CF 检索（slug / 名称精确匹配，`gameVersion` + Fabric 过滤）；
 3. 依赖闭包跨源：CF 文件的 `required` 依赖按 modId 展开（回查项目详情取 slug），与 Modrinth 侧同一套 BFS（去重 + 环检测 + 深度上限）；同一 mod 两源都收录时 **Modrinth 优先**（免 key、双哈希、社区限额宽松）。
 
 **意图清单（manifest）扩展**
@@ -576,7 +576,7 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 | 工具 | 权限 | 参数 | 语义 |
 | --- | --- | --- | --- |
 | `search_mods` | ReadOnly | `query`（中英皆可）、`mc_version?`、`loader?`、`limit?`（默认 5） | 别名表命中 → 直接查 slug（免检索歧义）；否则 `/v2/search` facets 检索；返回 slug / 标题 / 中文别名命中标注 / 简介 / 下载量 / 版本覆盖 |
-| `resolve_mod` | ReadOnly | `mods`（字符串数组，中英/slug 混排）、`mc_version`、`loader` | 逐项：别名解析 → Modrinth 精确匹配（**唯一命中才通过**；多命中返回候选交 Agent 经 ask_user 澄清）→ 零命中且 CurseForge Key 已配置时自动转 CF 检索 → 版本匹配 → BFS 依赖闭包（跨源）→ 输出**意图清单**（带 source 标注）+ 每项入选理由（轨迹可回放，R5） |
+| `resolve_mod` | ReadOnly | `mods`（字符串数组，中英/slug 混排）、`mc_version`、`loader` | 逐项：别名解析 → Modrinth 精确匹配（**唯一命中才通过**；多命中返回候选交 Agent 经 ask_user 澄清）→ 零命中自动转 CF 检索（官方或镜像基址）→ 版本匹配 → BFS 依赖闭包（跨源）→ 输出**意图清单**（带 source 标注）+ 每项入选理由（轨迹可回放，R5） |
 | `install_mods` | Network | `server_dir`（路径收敛校验）、`manifest`（resolve_mod 输出的意图清单） | 按源批量重查权威数据（Modrinth `versions?ids` / CF `mods/files`）→ 逐项下载 → 源专属哈希校验（Modrinth sha1+sha512 双校验；CF sha1 校验）→ 原子落 `<server_dir>/mods/`；进度逐文件推送、取消全程生效 |
 
 三段式理由：检索（可能多轮试探）与解析（确定性）与执行（唯一落盘点）分离，确认门只落在真实安装上（与 Java 供给的探测 / 安装拆分同理）；resolve 无副作用可放心重试，install 失败即结构化回环（NFR-3）。
@@ -584,7 +584,7 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 **安装语义**
 
 - **意图清单与权威数据分离**：manifest 只承载意图（source + slug + 源专属 id + file_name 展示名）；URL 与哈希在安装时按源批量端点**实时重取**——LLM 转手抄错 / 篡改均不影响正确性，"下载 URL / 哈希以上游 API 为权威"红线贯彻到安装期。
-- 下载白名单：按源分发——Modrinth 仅 `cdn.modrinth.com`；CurseForge 仅 `mediafilez.forgecdn.net` / `media.forgecdn.net`（对 API 下发的 `url` 域强校验；测试 / 自建代理基址同域放行）。
+- 下载白名单：按源分发——Modrinth 仅 `cdn.modrinth.com`；CurseForge 仅 `edge.forgecdn.net` / `mediafilez.forgecdn.net` / `media.forgecdn.net`（对 API 下发的 `url` 域强校验；测试 / 自建代理基址同域放行）。
 - 原子写：临时文件下载校验通过后重命名落位（tempfile 模式，同服务端 jar 下载惯例）。
 - 冲突策略：目标同名文件**哈希一致则跳过**（安装幂等，中断重跑安全）；**不一致则报错列出冲突**——不静默覆盖用户手动安装，交 Agent 问用户。
 - 下载失败 / 哈希不符 → 结构化错误回传 Agent（哪个文件、哪步、建议动作），失败回环。
@@ -665,7 +665,7 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 | Fabric 版本与安装器      | Fabric meta / maven                                                                        | Fabric 服搭建                | 同上                                                                          |
 | Spigot jar | getbukkit 下载页抓取解析（下载页令牌 → 302 → CDN 直链） | Spigot 服下载 | 无官方哈希，轨迹明示第三方来源 |
 | mod 元数据               | Modrinth API v2                                                                            | 检索、版本匹配、依赖树、下载 | 免 key，双哈希校验（sha1+sha512）                                              |
-| CurseForge mod 元数据与下载 | CurseForge 官方 API v1（`api.curseforge.com`）                                          | Modrinth 未收录 mod 的检索与下载（暮色森林等） | 需用户自配免费 key（`.env`，每用户一次性可选）；中心代理与网页抓取已裁定排除（§8.12） |
+| CurseForge mod 元数据与下载 | CurseForge API v1：官方（`api.curseforge.com`，需 key）+ 国内镜像（`mod.mcimirror.top/curseforge`，免 key） | Modrinth 未收录 mod 的检索与下载（暮色森林等） | 已配 key 走官方，未配置自动走镜像（开源公益项目 mcmod-info-mirror，与官方同构、实测 sha1 一致）；自建 key 池转发与网页抓取裁定排除（§8.12） |
 | JRE 二进制               | Adoptium v3 API（镜像：清华 TUNA）                                                         | Java 自动供给（§8.7）        | sha256 校验                                                                   |
 | 樱花frp API / frpc       | `api.natfrp.com/v4`；frpc 经官方分发（含哈希）                                             | 穿透编排（§8.8）             | 一次性人工：注册 + 实名 + token；API 定义 AGPL-3.0，引用注明                  |
 | 网络搜索 | 可配置后端：默认无；可选 DuckDuckGo HTML 抓取（免 key）或 Serper 等（配 key） | `web_search` 工具 | 国内可达性与反爬脆弱性诚实标注；领域事实主通道是知识库 + 上游 API，搜索是兜底 |
@@ -676,14 +676,14 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 - 错误分层：模块级 thiserror 枚举 → `AppError`；工具错误结构化回传 Agent（NFR-3）；用户可见错误必须附"下一步怎么办"。
 - **确认门（FR-04）**：按工具 `Permission` 分级——`ReadOnly` 免确认；`Write`（写文件）/ `Execute`（跑命令、起停进程）/ `Network`（下载大文件）默认确认，显示关键内容（命令行、目标路径、写入摘要）后**三选一：y 本次允许 / a 本会话允许此工具 / n 拒绝**（拒绝以结构化错误回传 Agent，由其调整方案）；`[safety] confirm_level = paranoid | standard | auto` 可调（默认 standard；auto 全部免确认，限演示 / CI 并留痕）。
 - **路径收敛**：文件类工具的目标路径必须解析在工作区或数据目录内，越界拒绝（结构化错误回传 Agent）。
-- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`、`api.modrinth.com` / `cdn.modrinth.com`（mod 下载仅此域）、`search.mcmod.cn` / `www.mcmod.cn`、`mediafilez.forgecdn.net` / `media.forgecdn.net`（CurseForge 下载，§8.12）；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
+- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`、`api.modrinth.com` / `cdn.modrinth.com`（mod 下载仅此域）、`search.mcmod.cn` / `www.mcmod.cn`、`edge.forgecdn.net` / `mediafilez.forgecdn.net` / `media.forgecdn.net`（CurseForge 下载，§8.12）、`mod.mcimirror.top`（CurseForge API 镜像，仅元数据不下文件，§8.12）；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
 - **进程安全**：子进程统一托管（进程组 / Job Object），Drop 守卫保证取消 / 退出时杀干净，不留孤儿。
 - 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
 - 离线模式风险：白名单建议与后果提示写入决策指南（定制 1），Agent 必须向用户明示。
 
 ## 13. 测试与验收策略
 
-- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、Modrinth 客户端（fixture mock）、CurseForge 客户端与双源降级（fixture mock）、依赖闭包黄金用例（含环检测 / 深度上限）、mcmod 搜索页解析（fixture HTML）、Profile save/load 往返、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）。
+- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、Modrinth 客户端（fixture mock）、CurseForge 客户端（GET 检索 fixture mock、官方 / 镜像双基址）与双源降级、依赖闭包黄金用例（含环检测 / 深度上限）、mcmod 搜索页解析（fixture HTML）、Profile save/load 往返、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）。
 - **Loop 级集成**：`LlmClient` trait + Fake 实现（脚本化回复与 tool_calls 序列）驱动 Agent Loop 全流程——不花真钱；断言消息流形状、工具调用顺序、停止条件、取消语义。
 - 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
@@ -715,7 +715,7 @@ src/
 - **开服场景包（分步实施）**：
   - **服务器设施（已完成）**：知识库（MC 版本比较器 + Java 兼容区间表 + 兼容性查证工具 + Mojang 客户端）→ 环境探测与 Java 探测 → Java 自动供给 → 服务端获取（原版 → Paper → Fabric → Spigot 逐渠道）→ 配置文件生成 → 进程托管三件套 → 端口探测 / SLP ping / 部署前校验 → 检索通道（MC Wiki 后端 + `[retrieval]` 来源注册）→ server-setup 决策指南 + 场景提示词 + 框架小改（场景段注入、技能内置根）+ 假 LLM 客户端端到端集成测试。出口标准：**US1 精简版**——版本 + 账号情况 + 端类型一句话 → 本机 `127.0.0.1:25565` 可登录、全程留痕；Forge 为指导模式；Profile（FR-16）后置。
   - **mod 场景（已完成，细则 §8.12）**：Modrinth 上游客户端（检索 / 项目版本 / 批量重取端点；fixture 单测）→ 中文别名表 + `search_mods` 检索工具 → `resolve_mod` 解析工具（别名解析 → 版本匹配 → 依赖闭包 → 意图清单；黄金用例快照）→ `install_mods` 安装工具（安装期重查 API → 双哈希校验 → 原子落盘 + 进度；冲突分支单测）→ mcmod 检索后端（HTML 解析 + URL 前缀约束）→ Profile 存取（save/load 工具 + `mcha profiles` 子命令）→ 部署前校验 mod 项 + server-setup 决策指南 mod 分支（含 FR-13 推荐规程）+ 提示词 / 工具动词表 + 假 LLM 客户端集成测试。出口标准：**US1 完整版（mod 增量）**——"Fabric 1.21.x，装 JEI 和 Sodium"一句话 → 依赖解析 + 校验下载落 `mods/` + 起服日志确认 mod 载入（`server_status` 可见）+ Profile 保存 / 读回可复现，全程留痕。
-  - **mod 双源扩展：CurseForge 通道（当前步，细则 §8.12）**：官方 API 客户端（检索 / 项目文件 / 批量重取；用户自配免费 key，`.env` 持有）→ `resolve_mod` 双源降级（Modrinth 零命中转 CF；别名表 `source` 标注直达）→ `install_mods` 按源分发（CF 下载域白名单 + sha1 校验）→ check_plan 兼容复核扩展到 CF 清单 → 未配置 key 的如实降级与申请指引 → mock 单测 + 端到端集成测试。出口标准：**暮色森林场景闭环**——"Fabric 1.21.x，装暮色森林和 JEI"在已配 key 时不须人工介入即完成解析安装；未配 key 时如实说明并给申请指引，Modrinth 通道不受影响。
+  - **mod 双源扩展：CurseForge 通道（当前步，细则 §8.12）**：API 客户端（GET 检索 / 项目文件 / 批量重取；官方 + 国内镜像双基址，key 有无自动选择）→ `resolve_mod` 双源降级（Modrinth 零命中转 CF；别名表 `source` 标注直达）→ `install_mods` 按源分发（CF 下载域白名单 + sha1 校验）→ check_plan 兼容复核扩展到 CF 清单 → setup 向导与启动自检按双通道话术更新 → mock 单测 + 端到端集成测试。出口标准：**暮色森林场景零配置闭环**——"Fabric 1.21.x，装暮色森林和 JEI"在**未配置任何 CurseForge key** 时不须人工介入即完成解析安装（经国内镜像通道）；已配 key 走官方 API。
   - **内网穿透（规划中）**：`tunnel_*`（§8.8）；故障诊断（选做，§8.9）随后。
 
 每模块完成后独立可编译、可运行（先跑通再美化）。

@@ -263,8 +263,8 @@ fn print_startup_hints(env: &AgentEnv) {
     let mut hints: Vec<String> = Vec::new();
     if env.curseforge_key.trim().is_empty() {
         hints.push(
-            "未配置 CurseForge Key：mod 覆盖仅 Modrinth（暮色森林等独占 mod 不可自动安装）。\
-             配置方法：运行 mcha setup（可选步骤，免费申请）"
+            "未配置 CurseForge Key：CF 走国内镜像通道（功能完整，暮色森林等可正常安装）。\
+             如需官方 API 可运行 mcha setup 配置（可选步骤，免费申请）"
                 .to_string(),
         );
     }

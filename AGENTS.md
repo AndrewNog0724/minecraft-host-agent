@@ -32,6 +32,7 @@
 - [x] M2.1 开服场景包·服务器设施：领域工具 + 知识库 + server-setup Skill + 场景提示词（US1 精简版跑通，2026-09-02）
 - [x] M2.2 开服场景包·mod 场景：mod 工具 + mcmod 检索 + Profile（FR-12/13/16，2026-09-03）
 - [x] M2.2.1 mod 双源扩展：CurseForge 通道 + setup 重运行/启动自检（D131/D132，2026-09-03）
+- [x] M2.2.2 CurseForge 国内镜像通道：MCIMirror 双基址（官方 key / 免 key 自动选择）、GET search、暮色森林零配置闭环（D133，2026-09-03）
 - [ ] M2.3 内网穿透（tunnel_*，FR-17）
 - [ ] P1：日志诊断（FR-18 选做）
 - [ ] 提交版设计文档定稿
