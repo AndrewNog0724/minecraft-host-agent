@@ -388,7 +388,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
     [model]
     endpoint = "https://open.bigmodel.cn/api/paas/v4"
     model = "glm-5.2"
-    context_len = 128000        # 上下文长度（token），裁剪依据
+    context_len = 256000        # 上下文长度（token），裁剪依据
     thinking = false            # 思考模式开关
     # api_key_env = "MCHA_API_KEY"
 
@@ -432,9 +432,9 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | 思考 | reasoning 流式增量 | 暗灰斜体流式（`✻` 前缀）；**直显超过 4 行即折叠**为"…（思考内容较长，已折叠）"（另有 2000 字符保险丝）；结束后挂一行"已思考 Ns"——该行在思考结束时立即发出，不迟到到正文末尾 |
 | 工具调用 | ToolStarted | `⏺ <动词> 工具名(关键参数摘要)`（青色，动词加粗）——动词表给每个工具配自然语言解释（如 run_command → "运行命令"），用户不必猜测工具名含义 |
 | 工具结果 | ToolFinished | `⎿` 缩进挂载 + ✓/✗ + 耗时 + 结果摘要；命令 stdout/stderr **直显超过 12 行即省略**并注明"已省略 N 行输出"，摘要压成单行且渲染层再截 120 字符（全文可经 `sessions show` 回看） |
-| 下载 / 命令进度 | ProgressEvent | indicatif 进度条就地更新；命令输出行以 `│` 引用条样式滚动 |
+| 下载 / 命令进度 | ProgressEvent | indicatif 进度条就地更新；命令输出行以 `│` 引用条样式滚动；托管服务器日志**就绪后停止滚动**（缓冲保留，`server_status` 可查），交付语后不再刷日志 |
 | 确认门 | ConfirmationRequest | 高亮块：完整命令 / 写入内容（diff 式）+ y/n/本会话允许 |
-| ask_user | AskUser 事件 | dialoguer 选项列表；用户选择以 `⎿ ←` 回显 |
+| ask_user | AskUser 事件 | dialoguer 选项列表；用户选择以 `⎿ ←` 回显；交互期间渲染器停靠、不叠加 spinner（交互控件独占终端，防重绘互相打乱） |
 | 助理文本 | 助理消息 | 正常色流式直显；方案摘要等静态块以 Markdown 渲染（termimad） |
 | 错误 | 错误事件 | 红色块 + "下一步怎么办"指引 |
 | 用量 | 会话结束 | **不在会话过程中刷屏**；退出时打印暗色汇总块：总输入 / 输出 token、总费用、会话时长（R6 的"清晰展示"由三层满足：退出汇总、`mcha usage` 全局账本、`sessions show` 每次调用明细）。预算告警 / 超限中断时即时提示例外 |

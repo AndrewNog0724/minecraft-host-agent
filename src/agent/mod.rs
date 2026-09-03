@@ -628,7 +628,7 @@ mod tests {
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();
         config.model.model = "m1".to_string();
-        config.model.context_len = 128_000;
+        config.model.context_len = 256_000;
         config.prices = vec![PriceEntry {
             model: "m1".to_string(),
             input_per_m: 2.0,

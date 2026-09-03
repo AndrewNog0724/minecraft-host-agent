@@ -55,7 +55,7 @@ impl Default for ModelConfig {
         Self {
             endpoint: String::new(),
             model: String::new(),
-            context_len: 128_000,
+            context_len: 256_000,
             thinking: false,
             api_key_env: "MCHA_API_KEY".to_string(),
         }
@@ -297,7 +297,7 @@ impl AppConfig {
 [model]
 endpoint = "{endpoint}"
 model = "{model}"
-context_len = 128000        # 上下文长度（token），裁剪依据
+context_len = 256000        # 上下文长度（token），裁剪依据
 thinking = false            # 思考模式开关
 # api_key_env = "MCHA_API_KEY"   # 存放 API Key 的环境变量名（Key 本体写 .env，不入库）
 
@@ -420,7 +420,7 @@ endpoint = "https://example.com/v1"
 model = "m1"
 "#;
         let config: AppConfig = toml::from_str(text).unwrap();
-        assert_eq!(config.model.context_len, 128_000);
+        assert_eq!(config.model.context_len, 256_000);
         assert!(!config.model.thinking);
         assert_eq!(config.model.api_key_env, "MCHA_API_KEY");
         assert_eq!(config.agent.command_timeout_secs, 120);

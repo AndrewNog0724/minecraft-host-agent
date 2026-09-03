@@ -8,6 +8,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -69,33 +70,42 @@ fn tail_lines(log: &AsyncMutex<VecDeque<String>>, count: usize) -> Vec<String> {
     }
 }
 
-async fn push_line(
-    log: &AsyncMutex<VecDeque<String>>,
-    line: String,
-    events: &crate::events::EventTx,
-) {
-    let mut queue = log.lock().await;
-    if queue.len() >= LOG_CAPACITY {
-        queue.pop_front();
-    }
-    queue.push_back(line.clone());
-    drop(queue);
-    let _ = events.send(Event::OutputLine(format!("│ {line}")));
-}
-
 /// 读取一条输出流（stdout 或 stderr）逐行入日志缓冲并发送事件。
+///
+/// `emit` 为 false 时停止向事件流发送并**放弃发送端**——托管服务器的日志
+/// 读取任务长期存活，若始终持有发送端，回合结束后渲染器将永不退出，
+/// REPL 卡死在回合收尾无法回到提示符（用户实测教训）。此后日志继续进
+/// 缓冲（server_status 可查），不再滚动刷屏。
 fn spawn_reader(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    line_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    mut line_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     log: Arc<AsyncMutex<VecDeque<String>>>,
-    events: crate::events::EventTx,
+    mut events: Option<crate::events::EventTx>,
+    emit: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut reader = tokio::io::BufReader::new(stream).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            push_line(&log, line.clone(), &events).await;
-            let _ = line_tx.send(line);
+            {
+                let mut queue = log.lock().await;
+                if queue.len() >= LOG_CAPACITY {
+                    queue.pop_front();
+                }
+                queue.push_back(line.clone());
+            }
+            if emit.load(Ordering::SeqCst) {
+                if let Some(tx) = line_tx.as_ref() {
+                    let _ = tx.send(line.clone());
+                }
+                if let Some(events) = events.as_ref() {
+                    let _ = events.send(Event::OutputLine(format!("│ {line}")));
+                }
+            } else {
+                // 停止滚动：放弃发送端（渲染器可在回合结束后正常收尾）
+                line_tx = None;
+                events = None;
+            }
         }
     });
 }
@@ -278,9 +288,24 @@ impl Tool for StartServerTool {
         let stdin = child.stdin.take().expect("stdin 已 piped");
 
         let log: Arc<AsyncMutex<VecDeque<String>>> = Arc::new(AsyncMutex::new(VecDeque::new()));
+        // 日志滚动闸：就绪后停止向事件流发送（读取任务放弃发送端），日志
+        // 继续进缓冲供 server_status 查询；交付语后不再有日志刷屏
+        let emit = Arc::new(AtomicBool::new(true));
         let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        spawn_reader(stdout, line_tx.clone(), log.clone(), ctx.events.clone());
-        spawn_reader(stderr, line_tx, log.clone(), ctx.events.clone());
+        spawn_reader(
+            stdout,
+            Some(line_tx.clone()),
+            log.clone(),
+            Some(ctx.events.clone()),
+            emit.clone(),
+        );
+        spawn_reader(
+            stderr,
+            Some(line_tx),
+            log.clone(),
+            Some(ctx.events.clone()),
+            emit.clone(),
+        );
 
         let timeout = Duration::from_secs(args.ready_timeout_secs.unwrap_or(120).clamp(5, 600));
         let managed = ManagedServer {
@@ -302,6 +327,9 @@ impl Tool for StartServerTool {
             timeout,
         )
         .await;
+        // 无论就绪 / 超时 / 崩溃 / 被打断：工具已返回，日志一律停止滚动并
+        // 放弃事件发送端——否则回合结束后渲染器永不退出，REPL 卡死（实测教训）
+        emit.store(false, Ordering::SeqCst);
         match ready {
             Err(ToolError::Cancelled) => Err(ToolError::Cancelled), // 进程保持托管
             Err(err) => {
@@ -320,7 +348,7 @@ impl Tool for StartServerTool {
                         "监听 127.0.0.1:{port}；可用 mc_ping 验证，或直接进服游玩。"
                     ));
                 }
-                lines.push("提示：长期运行/关闭 mcha 后请用交付的 start 脚本启动。".to_string());
+                lines.push("日志已停止滚动（server_status 可查）；长期运行/关闭 mcha 后请用交付的 start 脚本启动。".to_string());
                 Ok(ToolOutcome::ok(lines.join("\n")))
             }
             Ok(false) => {
@@ -673,6 +701,29 @@ mod tests {
         assert_eq!(parse_port(dir.path()), Some(30000));
         std::fs::write(dir.path().join("server.properties"), "motd=x\n").unwrap();
         assert_eq!(parse_port(dir.path()), None);
+    }
+
+    /// v2.3 实测回归：日志停滚后读者必须放弃事件发送端，否则渲染器永不
+    /// 退出、REPL 卡死在回合收尾（无法回到提示符，Ctrl-D / Ctrl-C 失效）。
+    #[tokio::test]
+    async fn reader_drops_sender_when_emit_disabled() {
+        let log: Arc<AsyncMutex<VecDeque<String>>> = Arc::new(AsyncMutex::new(VecDeque::new()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (etx, _erx) = crate::events::event_channel();
+        let emit = Arc::new(AtomicBool::new(true));
+        let (mut client, server_side) = tokio::io::duplex(64);
+        spawn_reader(server_side, Some(tx), log.clone(), Some(etx), emit.clone());
+
+        use tokio::io::AsyncWriteExt;
+        client.write_all(b"one\n").await.unwrap();
+        // 关闸前的行照常发送
+        assert_eq!(rx.recv().await.as_deref(), Some("one"));
+        emit.store(false, Ordering::SeqCst);
+        client.write_all(b"two\n").await.unwrap();
+        // 关闸后的行不再发送；读者放弃发送端 → 通道关闭（渲染器可收尾）
+        assert!(rx.recv().await.is_none());
+        // 日志缓冲不受影响（server_status 仍可查全量尾部）
+        assert_eq!(log.lock().await.len(), 2);
     }
 
     #[test]

@@ -1,4 +1,11 @@
 //! 终端交互实现：确认门（y/a/n 单键）与 ask_user（dialoguer）。
+//!
+//! 交互与渲染器分属不同线程——交互激活期间通过共享的 `ui_active` 闸让
+//! 渲染器停靠（打印前自旋等待），避免并发输出打乱 dialoguer 的绘制
+//! （用户实测：提问提示语反复换行、键入内容被覆盖不可见）。
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers, read};
 use crossterm::style::{Attribute, Color, Stylize};
@@ -6,7 +13,34 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crate::tools::{AskRequest, ConfirmDecision, ConfirmRequest, Interaction, InteractionError};
 
-pub struct TerminalInteraction;
+pub struct TerminalInteraction {
+    /// 交互激活闸：true = 渲染器暂停打印。
+    ui_active: Arc<AtomicBool>,
+}
+
+impl TerminalInteraction {
+    pub fn new(ui_active: Arc<AtomicBool>) -> Self {
+        Self { ui_active }
+    }
+
+    /// 作用域守卫：进入置位，任何退出路径复位。
+    fn guard(&self) -> UiActiveGuard<'_> {
+        self.ui_active.store(true, Ordering::SeqCst);
+        UiActiveGuard {
+            flag: &self.ui_active,
+        }
+    }
+}
+
+struct UiActiveGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for UiActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
 
 fn read_line_sync(prompt: &str) -> std::io::Result<String> {
     use std::io::Write;
@@ -56,6 +90,7 @@ fn map_dialoguer_error<E: std::fmt::Display>(err: E) -> InteractionError {
 impl Interaction for TerminalInteraction {
     /// 确认门（D110）：y 本次允许 / a 本会话允许此工具 / n 拒绝，单键确认。
     async fn confirm(&self, req: ConfirmRequest) -> Result<ConfirmDecision, InteractionError> {
+        let _guard = self.guard();
         tokio::task::spawn_blocking(move || {
             println!(
                 "{}",
@@ -109,6 +144,7 @@ impl Interaction for TerminalInteraction {
 
     /// ask_user：选项列表（可自由输入）或开放文本。
     async fn ask(&self, req: AskRequest) -> Result<String, InteractionError> {
+        let _guard = self.guard();
         tokio::task::spawn_blocking(move || {
             if req.options.is_empty() {
                 return dialoguer::Input::<String>::new()

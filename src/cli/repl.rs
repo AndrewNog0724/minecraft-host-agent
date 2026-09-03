@@ -65,7 +65,10 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
     register_general_tools(&mut registry);
     crate::tools::mc::register_mc_tools(&mut registry);
     let ledger = UsageLedger::new(&data_dir)?;
-    let interaction: Arc<dyn crate::tools::Interaction> = Arc::new(TerminalInteraction);
+    // 交互激活闸：确认门 / ask_user 绘制期间渲染器停靠（v2.3 实测修复）
+    let ui_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let interaction: Arc<dyn crate::tools::Interaction> =
+        Arc::new(TerminalInteraction::new(ui_active.clone()));
     let mut env = AgentEnv {
         llm: Arc::new(llm),
         registry: Arc::new(registry),
@@ -136,7 +139,7 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
 
     // 预填首条消息
     if let ReplMode::WithMessage(first) = &mode {
-        run_turn(&env, &mut session, first, &mut allowed).await?;
+        run_turn(&env, &mut session, first, &mut allowed, &ui_active).await?;
     }
 
     loop {
@@ -186,7 +189,7 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
             }
             continue;
         }
-        run_turn(&env, &mut session, input, &mut allowed).await?;
+        run_turn(&env, &mut session, input, &mut allowed, &ui_active).await?;
     }
 
     print_exit_summary(&env, &session, started);
@@ -199,9 +202,10 @@ async fn run_turn(
     session: &mut Session,
     input: &str,
     allowed: &mut HashSet<String>,
+    ui_active: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
     let (tx, rx) = event_channel();
-    let renderer = tokio::spawn(render_task(rx));
+    let renderer = tokio::spawn(render_task(rx, ui_active.clone()));
     let cancel = CancelToken::new();
 
     println!();
@@ -258,7 +262,7 @@ fn print_banner(env: &AgentEnv, session: &Session) {
     };
     println!(
         "{}",
-        "MCHA — Minecraft Host Agent（M1 Agent 框架）"
+        "MCHA — Minecraft Host Agent（开服管家）"
             .with(Color::Cyan)
             .attribute(Attribute::Bold)
     );

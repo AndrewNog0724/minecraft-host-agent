@@ -171,7 +171,7 @@ cargo clippy --all-targets -- -D warnings
   [model]
   endpoint = "https://open.bigmodel.cn/api/paas/v4"
   model = "glm-5.2"
-  context_len = 128000        # 上下文长度（token），裁剪依据
+  context_len = 256000        # 上下文长度（token），裁剪依据
   thinking = false            # 思考模式开关
 
   [[prices]]                  # 元 / 百万 token；无条目的模型费用记 0 并标注

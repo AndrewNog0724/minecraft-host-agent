@@ -115,6 +115,21 @@ fn tool_verb(name: &str) -> &'static str {
         "web_search" => "搜索网页",
         "ask_user" => "向你提问",
         "load_skill" => "加载技能",
+        // 开服领域工具（M2.1）
+        "check_version_compat" => "查证版本兼容",
+        "sys_info" => "探测系统环境",
+        "check_java" => "探测 Java",
+        "ensure_java" => "安装 Java",
+        "fetch_server_jar" => "下载服务端",
+        "write_server_files" => "生成服务器配置",
+        "start_server" => "启动服务器",
+        "stop_server" => "停止服务器",
+        "server_status" => "查看服务器状态",
+        "probe_port" => "探测端口",
+        "mc_ping" => "Ping 服务器",
+        "check_plan" => "校验部署方案",
+        "wiki_search" => "检索 MC Wiki",
+        "wiki_page" => "读取 Wiki 页面",
         _ => "调用工具",
     }
 }
@@ -125,7 +140,15 @@ fn collapse_lines(text: &str) -> String {
 }
 
 /// 渲染任务：消费事件直到通道关闭。
-pub async fn render_task(mut rx: UnboundedReceiver<Event>) {
+///
+/// `ui_active` 为交互激活闸：终端问答（确认门 / ask_user）在独立线程绘制，
+/// 期间渲染器停靠（不打印），避免并发输出打乱交互控件的绘制与回显
+/// （用户实测：提问提示语反复换行、键入内容被覆盖）。
+pub async fn render_task(
+    mut rx: UnboundedReceiver<Event>,
+    ui_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
     let symbols = Symbols::detect();
     let multi = MultiProgress::new();
     let style = ProgressStyle::with_template("{spinner} {msg}")
@@ -136,6 +159,10 @@ pub async fn render_task(mut rx: UnboundedReceiver<Event>) {
     let mut state = StreamState::default();
 
     while let Some(event) = rx.recv().await {
+        // 交互激活期间停靠：排队不打丢（unbounded），等待问答结束后按序输出
+        while ui_active.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        }
         match event {
             Event::UsageRecorded(_) => {
                 // 用量与"无价格预设"提示都不在会话中出现，
@@ -206,11 +233,16 @@ pub async fn render_task(mut rx: UnboundedReceiver<Event>) {
                         .attribute(Attribute::Bold),
                     format!("{name}({args_summary})").with(Color::Cyan)
                 );
-                let pb = multi.add(ProgressBar::new_spinner());
-                pb.set_style(style.clone());
-                pb.set_message(format!("{name} 运行中…（Ctrl-C 打断）"));
-                pb.enable_steady_tick(std::time::Duration::from_millis(120));
-                spinner = Some(pb);
+                // 交互工具自带终端控件（dialoguer），spinner 的 steady-tick
+                // 会反复重绘打乱其界面（用户实测：提问提示语不断换行）——
+                // 不为其创建 spinner
+                if name != "ask_user" {
+                    let pb = multi.add(ProgressBar::new_spinner());
+                    pb.set_style(style.clone());
+                    pb.set_message(format!("{name} 运行中…（Ctrl-C 打断）"));
+                    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+                    spinner = Some(pb);
+                }
             }
             Event::ToolFinished {
                 ok,
