@@ -86,6 +86,18 @@ fn map_dialoguer_error<E: std::fmt::Display>(err: E) -> InteractionError {
     }
 }
 
+/// 框行展开：内容内嵌换行时拆为多行，保证每个物理行都带 `│ ` 框线前缀
+/// （"替换为"这类多行内容不再破坏边框，v2.4 实测）。
+pub(crate) fn expand_box_lines(lines: &[String]) -> Vec<String> {
+    let mut expanded = Vec::new();
+    for line in lines {
+        for part in line.split('\n') {
+            expanded.push(part.to_string());
+        }
+    }
+    expanded
+}
+
 #[async_trait::async_trait]
 impl Interaction for TerminalInteraction {
     /// 确认门（D110）：y 本次允许 / a 本会话允许此工具 / n 拒绝，单键确认。
@@ -98,7 +110,7 @@ impl Interaction for TerminalInteraction {
                     .with(Color::Yellow)
                     .attribute(Attribute::Bold)
             );
-            for line in &req.lines {
+            for line in expand_box_lines(&req.lines) {
                 println!("{}", format!("│ {line}").with(Color::Yellow));
             }
             println!("{}", "└─".with(Color::Yellow));
@@ -175,5 +187,23 @@ impl Interaction for TerminalInteraction {
         })
         .await
         .map_err(|err| InteractionError::Failed(err.to_string()))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_lines_expand_embedded_newlines() {
+        let lines = vec![
+            "文件：server/whitelist.json".to_string(),
+            "替换为：[{\"name\":\"A\"},\n{\"name\":\"B\"}]\n]".to_string(),
+        ];
+        let expanded = expand_box_lines(&lines);
+        assert_eq!(expanded.len(), 4);
+        assert!(expanded.iter().all(|l| !l.contains('\n')), "{expanded:?}");
+        assert_eq!(expanded[2], "{\"name\":\"B\"}]");
+        assert_eq!(expanded[3], "]");
     }
 }

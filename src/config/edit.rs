@@ -5,7 +5,15 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 /// 支持的顶层配置段（用于报错提示）。
-pub const KNOWN_SECTIONS: &[&str] = &["model", "budget", "safety", "search", "agent"];
+pub const KNOWN_SECTIONS: &[&str] = &[
+    "model",
+    "budget",
+    "safety",
+    "search",
+    "network",
+    "retrieval",
+    "agent",
+];
 
 /// 把字符串值按直觉类型转换：true/false → 布尔，整数 / 浮点 → 数值，其余 → 字符串。
 fn coerce(raw: &str) -> Value {

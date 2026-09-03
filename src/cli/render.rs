@@ -314,6 +314,13 @@ pub async fn render_task(
             }
             Event::Blank => {
                 println!();
+                // 空行同时收掉未换行的文本行，避免下一板块重复补换行
+                state.text_line_open = false;
+            }
+            Event::QueueDrained(ack) => {
+                // 队列排空握手：到此事件说明此前内容已全部画出（FIFO）
+                use std::sync::atomic::Ordering;
+                ack.store(true, Ordering::SeqCst);
             }
             Event::Notice(text) => {
                 println!("  · {}", text.with(Color::DarkGrey));
@@ -323,5 +330,39 @@ pub async fn render_task(
     // 回合结束：助理文本若未以换行收尾，补一个换行（后续内容从新行开始）
     if state.text_line_open {
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v2.4 实测回归：队列排空握手——渲染器处理到哨兵事件时置位 ack，
+    /// 交互线程据此确认"此前内容已全部画出"再打印确认框。
+    #[tokio::test]
+    async fn queue_drained_event_acks_after_flush() {
+        let (tx, rx) = crate::events::event_channel();
+        let ui_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drained = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // 先排一段会改变板块状态的流（文本未换行 + 空行），再发哨兵
+        let _ = tx.send(Event::TextDelta("尚未收尾的文本".into()));
+        let _ = tx.send(Event::Blank);
+        let _ = tx.send(Event::QueueDrained(drained.clone()));
+        drop(tx);
+
+        let task = tokio::spawn(render_task(rx, ui_active));
+        // 给渲染任务一点处理时间（无竞争断言：最终必然置位）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !drained.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            drained.load(std::sync::atomic::Ordering::SeqCst),
+            "渲染器应处理哨兵事件并置位 ack"
+        );
+        let _ = task.await;
     }
 }

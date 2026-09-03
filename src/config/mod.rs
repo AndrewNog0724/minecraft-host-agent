@@ -190,6 +190,11 @@ pub struct AppConfig {
     pub agent: AgentTuning,
 }
 
+/// 旧版默认上下文长度：v2.3 前的 setup 向导模板把它**显式写入**了用户的
+/// config.toml，仅改代码默认值不会影响已存在的文件。加载时据此识别并
+/// 一次性迁移（恰好等于该值才迁移；用户后来显式改过的值不动）。
+const OLD_DEFAULT_CONTEXT_LEN: u32 = 128_000;
+
 /// 配置加载结果：文件不存在（首次启动走 setup）与文件存在但字段缺失要区分。
 pub struct LoadedConfig {
     pub config: AppConfig,
@@ -220,10 +225,35 @@ impl AppConfig {
         let mut config: AppConfig = toml::from_str(&text)
             .with_context(|| format!("解析配置文件失败：{}", path.display()))?;
         config.merge_builtin_prices();
+        Self::migrate_old_defaults(&path, &mut config);
         Ok(LoadedConfig {
             config,
             existed: true,
         })
+    }
+
+    /// 旧默认值一次性迁移：context_len 128000 → 256000（v2.3）。
+    ///
+    /// 仅当值恰好等于旧默认时触发（旧版向导写死所致），就地重写文件（保留
+    /// 注释）并打印一次性提示——之后再次启动不再出现。用户显式修改过的
+    /// 其他值一律不动。
+    fn migrate_old_defaults(path: &Path, config: &mut AppConfig) {
+        if config.model.context_len != OLD_DEFAULT_CONTEXT_LEN {
+            return;
+        }
+        match edit::set_key(path, "model.context_len", "256000") {
+            Ok(()) => {
+                config.model.context_len = 256_000;
+                println!(
+                    "提示：检测到旧版默认上下文长度 128000，已自动迁移为 256000（config.toml 已就地更新）；如需其他值：mcha config set model.context_len <值>"
+                );
+            }
+            Err(err) => {
+                // 迁移失败不阻断启动：运行时用新默认值，文件保持原样
+                tracing::warn!("上下文长度迁移写回失败（{}）：{err}", path.display());
+                config.model.context_len = 256_000;
+            }
+        }
     }
 
     /// 默认配置 + 内置价格预设（用户文件里同 model 的条目覆盖预设）。
@@ -431,6 +461,42 @@ model = "m1"
         let config = AppConfig::with_builtin_prices();
         // 预设文件当前为占位注释，解析出空表也算通过（不许崩溃）
         assert!(config.prices.is_empty() || !config.prices.is_empty());
+    }
+
+    #[test]
+    fn old_default_context_len_migrates_once() {
+        // 旧版向导把 128000 显式写入用户 config.toml：加载时应迁移为 256000
+        // 并就地重写文件（用户显式改过的其他值不动）
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# 我的配置\n[model]\nendpoint = \"https://a.example\"\nmodel = \"m1\"\ncontext_len = 128000\n",
+        )
+        .unwrap();
+        let loaded = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(loaded.config.model.context_len, 256_000);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("context_len = 256000"), "{text}");
+        assert!(text.contains("# 我的配置"), "注释应保留：{text}");
+        // 再次加载不再触发迁移（文件已是新值）
+        let again = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(again.config.model.context_len, 256_000);
+    }
+
+    #[test]
+    fn explicit_non_default_context_len_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[model]\nendpoint = \"https://a.example\"\nmodel = \"m1\"\ncontext_len = 64000\n",
+        )
+        .unwrap();
+        let loaded = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(loaded.config.model.context_len, 64_000);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("context_len = 64000"), "{text}");
     }
 
     #[test]

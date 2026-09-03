@@ -10,7 +10,8 @@ pub mod message;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::cancel::CancelToken;
 use crate::config::{AppConfig, ConfirmLevel};
@@ -272,9 +273,22 @@ impl Agent {
             return Ok(ToolOutcome::err(message));
         }
 
-        // 确认门（D106/D110）：确认块由交互线程直接打印，与渲染器任务跨线程——
-        // 块前空行经事件流由渲染器打出，保证顺序确定
+        // 确认门（D106/D110）：确认块由交互线程直接打印，与渲染器任务跨线程。
+        // 打印前必须等渲染器排空队列（含块前空行），否则跨线程抢打印会把
+        // 确认框贴在尚未收尾的流式文本同一行（v2.4 实测）
         let _ = events.send(Event::Blank);
+        let drained = Arc::new(AtomicBool::new(false));
+        let _ = events.send(Event::QueueDrained(drained.clone()));
+        let wait_drained = {
+            let drained = drained.clone();
+            async move {
+                while !drained.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        };
+        // 渲染器不存在时（单元测试直连 Loop）限时放行，不悬挂
+        let _ = tokio::time::timeout(Duration::from_millis(500), wait_drained).await;
         match Self::gate(env, tool, &call.arguments, allowed_tools).await? {
             ConfirmDecision::Allow | ConfirmDecision::AllowAlways => {}
             ConfirmDecision::Deny => {

@@ -35,6 +35,10 @@ pub enum Event {
     OutputLine(String),
     /// 空行：板块间呼吸感由需要保证顺序的模块主动插入（如确认门前）。
     Blank,
+    /// 队列排空握手（v2.4）：渲染器处理到此事件时，说明此前的事件已全部
+    /// 画出——置位 ack。交互线程打印确认框前必须等到它，否则跨线程抢打印
+    /// 会把确认框贴在尚未收尾的流式文本同一行（用户实测）。
+    QueueDrained(std::sync::Arc<std::sync::atomic::AtomicBool>),
     /// 一般提示（打断、预算告警、auto 模式留痕等，暗色块）。
     Notice(String),
     /// 一次 LLM 调用的用量入账。D108：会话中不渲染、退出时由 REPL 汇总；
