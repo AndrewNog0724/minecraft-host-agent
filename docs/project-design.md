@@ -138,7 +138,7 @@ $ mcha                          # 进入交互会话（mcha new "…" 为预填�
 
 ### 5.1 功能列表（FR）
 
-**Agent 框架层（M1，与场景无关）**
+**Agent 框架层（与场景无关）**
 
 | 编号 | 功能 | 说明 | 映射 |
 | --- | --- | --- | --- |
@@ -151,7 +151,7 @@ $ mcha                          # 进入交互会话（mcha new "…" 为预填�
 | FR-07 | 会话历史管理 | 会话 = 完整消息流（含工具调用与结果）落盘；查看 / 导出 / 恢复 | R5 |
 | FR-08 | 用量与费用统计 | 每次调用 in / out token 计量与价格换算（明细经 `sessions show` 查看）；会话结束汇总展示、`usage` 全局账本；预算上限、超限中断 | R6 |
 
-**开服场景层（M2+）**
+**开服场景层**
 
 | 编号 | 功能 | 说明 | 映射 |
 | --- | --- | --- | --- |
@@ -166,7 +166,7 @@ $ mcha                          # 进入交互会话（mcha new "…" 为预填�
 | FR-17 | 内网穿透编排 | `tunnel_*`：樱花frp 全自动编排（§8.8） | 定制3 |
 | FR-18 | 日志诊断（选做） | `read_server_log` / `analyze_log`：模式库 + 会话式排障 | 定制4 |
 | FR-19 | 升级迁移 | 备份 → mod 逐项核对 → 换版本 → 验证旧世界 | — |
-| FR-20 | 领域检索通道 | `wiki_search` / `wiki_page`：MC Wiki（M2.1）与 MC百科（M2.2）的 source 抽象检索（§8.11） | 定制2 |
+| FR-20 | 领域检索通道 | `wiki_search` / `wiki_page`：MC Wiki 与 MC百科的 source 抽象检索（§8.11） | 定制2 |
 
 ### 5.2 开服决策指南（定制 1 的内容大纲）
 
@@ -237,7 +237,7 @@ MC 版本 → Java 大版本（check_version_compat 查证）→ ensure_java
 │  预算守卫         │   http_download/            │   adoptium/natfrp) │
 │                  │   web_search/ask_user/      │  版本校验管线       │
 │                  │   load_skill                │                   │
-│                  │   场景(M2)：ensure_java/     │  skills（指南）    │
+│                  │   场景：ensure_java/        │  skills（指南）    │
 │                  │   fetch_server_jar/...      │  指南资产(Skills)   │
 │                  │   （统一注册，§8.2）          │                   │
 ├──────────────────┴───────────────┬────────────┴───────────────────┤
@@ -293,7 +293,7 @@ enum ToolOutcome { Ok { content: String }, Err { error: String } }
 - **循环**：发送消息（system + 历史 + 工具声明）→ 解析回复 → 有 `tool_calls` 则逐个执行并回传 → 纯文本且无工具调用则本回合结束。与课程 `agent-architecture.md` 第五节的标准 Agent Loop 一致。
 - **回合原子性（消息流合法性）**：裁剪与打断都不破坏消息配对关系——上下文裁剪以**完整回合**（user + assistant + 全部 tool 消息）为单位；用户打断时，该回合未完成的 tool_calls 逐一回填 `ToolOutcome::Err("用户中断")` 后照常入史，半截 assistant 文本丢弃。任何时刻会话中的消息流都结构合法，可直接导出 / 恢复（R5）。
 - **停止条件**：① 模型回合自然结束（交还用户输入，多轮继续）；② Ctrl-C（取消当前 LLM 流式或工具执行，按回合原子性规则收尾，会话保留）；③ 预算耗尽（R6，强制收尾并报告）；④ 轮数保险丝（单回合工具调用次数上限，config 可调，默认 40——防失控循环，不是业务限制）。
-- **上下文窗口管理（R3 的 context_len 落点）**：发送前按保守字符近似估算 token（CJK ≈ 1 token/字，ASCII ≈ 4 字符/token；M1 不引入 tokenizer）；超限时从最老的完整回合开始裁剪，system prompt 永远保留（被裁内容全量仍落盘，R5 不受影响；工具大输出先经"占位摘要"替换再参与裁剪）。更精细的摘要压缩留作后续迭代。
+- **上下文窗口管理（R3 的 context_len 落点）**：发送前按保守字符近似估算 token（CJK ≈ 1 token/字，ASCII ≈ 4 字符/token；不引入 tokenizer）；超限时从最老的完整回合开始裁剪，system prompt 永远保留（被裁内容全量仍落盘，R5 不受影响；工具大输出先经"占位摘要"替换再参与裁剪）。更精细的摘要压缩留作后续迭代。
 - **大输出落盘**：工具结果超过阈值（如 8 KB）时写入会话附件目录、回传"路径 + 首尾摘要"，避免撑爆上下文。
 
 ### 8.2 tools：工具系统与工具集
@@ -311,7 +311,7 @@ trait Tool {
 enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 ```
 
-**通用工具集（M1，框架自带，与场景无关）**
+**通用工具集（框架自带，与场景无关）**
 
 | 工具                                                  | 职责                                                             | 边界约束                                        |
 | ----------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
@@ -323,21 +323,21 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | `ask_user` | 向用户提问：单选项列表或自由文本（默认允许选项外自由输入） | Agent 获取用户输入的唯一通道；用户 Ctrl-C = 打断当前回合（同全局语义） |
 | `load_skill`                                          | 按需加载领域指南（Skills，§8.5）                                 | 只读注入                                        |
 
-**开服领域工具（M2 起注册，`mc` 模块）**
+**开服领域工具（`mc` 模块）**
 
 | 工具                                             | 职责（内部细节见 §8.7/§8.8）                                                 |
 | ------------------------------------------------ | ---------------------------------------------------------------------------- |
 | `check_version_compat`                           | MC × 服务端 × 加载器 × Java × mod 兼容性查证（知识库 + 上游 API；ReadOnly）  |
-| `sys_info`                                       | 环境探测：OS / 架构 / 总内存 / 可用内存 / CPU 核数（D116；-Xmx 推荐依据；ReadOnly） |
-| `check_java` / `ensure_java`                     | Java 探测（ReadOnly）/ 受管自动安装（Network）——确认门只落在真实安装上（D117，§8.7） |
-| `search_mods` / `resolve_mod`                    | Modrinth 检索（含中文别名表）、依赖闭包解析、带哈希下载清单（M2.2）          |
-| `wiki_search` / `wiki_page`                      | 领域检索通道（D120，§8.11）：MC Wiki（M2.1）/ MC百科（M2.2）；ReadOnly      |
+| `sys_info`                                       | 环境探测：OS / 架构 / 总内存 / 可用内存 / CPU 核数（-Xmx 推荐依据；ReadOnly） |
+| `check_java` / `ensure_java`                     | Java 探测（ReadOnly）/ 受管自动安装（Network）——确认门只落在真实安装上（§8.7） |
+| `search_mods` / `resolve_mod` / `install_mods`   | mod 三段式（§8.12）：检索（含中文别名表）→ 版本匹配 + 依赖闭包 → 意图清单 → 校验下载落盘 |
+| `wiki_search` / `wiki_page`                      | 领域检索通道（§8.11）：MC Wiki / MC百科；ReadOnly      |
 | `fetch_server_jar`                               | 原版 / Spigot(getbukkit 抓页解析) / Paper / Fabric 官方渠道下载 + 哈希校验   |
 | `write_server_files` | eula / server.properties / whitelist / 启动脚本生成（eula 经 ask_user 确认）；whitelist 条目须含**离线 UUID**（Mojang v3 口径——缺 uuid 字段会被服务端静默丢弃，实测教训） |
 | `check_plan` | 部署前确定性校验：online-mode 与账号类型一致、Java 版本匹配、内存 > 0、白名单与离线模式配套、端口未占用等 checklist 核对，缺项返回结构化清单（定制 1 的"不漏分支"第二重保险） |
 | `start_server` / `stop_server` / `server_status` | 进程托管、日志行流、就绪检测、Drop 守卫防孤儿进程                            |
 | `probe_port` / `mc_ping`                         | 本机端口验证 / SLP ping（取回 MOTD / 版本 / 人数）                           |
-| `save_profile` / `load_profile`                  | 部署方案快照与产物清单存取（§8.6；后置 M2.2，D121）                          |
+| `save_profile` / `load_profile`                  | 部署方案快照与产物清单存取（§8.6/§8.12）                                     |
 | `tunnel_*`                                       | 樱花frp 编排：token 校验 / 节点打分 / 建隧道 / frpc 托管 / 端到端验证        |
 | `read_server_log` / `analyze_log`（选做）        | 日志尾部读取；错误模式库确定性匹配 → 候选根因 + 修复动作                     |
 
@@ -356,7 +356,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 
 - 静态知识库（L1）：随包 TOML 资源——MC→Java 映射、加载器生态、mod 中文别名表、崩溃错误模式库；带版本号与来源日期，可独立更新。
 - 上游客户端：Mojang piston-meta、PaperMC Fill v3（旧 v2 已 410 下线，2026-09 实测迁移）、Fabric meta、Modrinth v2、Adoptium v3、SakuraFrp v4；代理与镜像在 HTTP 层统一注入。
-- 版本校验管线：`semver` 解析（非法输入如"26.2"拒绝并给就近建议）→ 上游存在性核对 → 依赖闭包解析（Modrinth `dependencies` 递归）→ 产出带哈希的下载清单。以上均作为 `check_version_compat` 等查询工具的后端。MC 版本为纯数字点分串，排序与区间匹配用**自写数值段比较器**（约 30 行，答辩可解释），`semver` 仅作输入合法性闸（§8.10）。
+- 版本校验管线：`semver` 解析（非法输入如"26.2"拒绝并给就近建议）→ 上游存在性核对 → 依赖闭包解析（Modrinth `dependencies` 递归）→ 产出 mod **意图清单**（URL 与哈希留到安装期实时重取）。以上均作为 `check_version_compat` 等查询工具的后端。MC 版本为纯数字点分串，排序与区间匹配用**自写数值段比较器**（约 30 行，答辩可解释），`semver` 仅作输入合法性闸（§8.10）。
 
 ### 8.5 定制内容体系（Skills / 知识 / 提示词）
 
@@ -367,18 +367,18 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | Skills 流程知识 | 开服决策指南、诊断规程、穿透操作手册、离线认证方案对比等 | `assets/skills/<name>/SKILL.md`（+ 参考文档）    | `load_skill` 按需加载：平时只在 system prompt 放一句话清单，Agent 判断需要时加载全文（上下文管理友好） |
 | L1 结构化事实   | MC→Java 映射、别名表、端口常识、错误模式库               | `assets/knowledge/*.toml`                        | 仅经查询工具返回值                                                                                     |
 | L2 易变事实     | 版本存在性、依赖树、下载地址、节点负载                   | 上游 API 实时查询                                | 工具返回值                                                                                             |
-| L4 表达与边界 | 框架级 system prompt（M1：通用助手角色、工具使用纪律、中文交互、安全规则——"不得尝试绕过确认门与路径收敛"）；场景提示词（M2：开服管家角色、领域规则、Skills 清单） | `assets/prompts/*.md`（include_str! 编译期嵌入）；最终 system prompt = 框架基础段（固定）+ 场景段（M2 注入） | system prompt |
+| L4 表达与边界 | 框架级 system prompt（通用助手角色、工具使用纪律、中文交互、安全规则——"不得尝试绕过确认门与路径收敛"）；场景提示词（开服管家角色、领域规则、Skills 清单） | `assets/prompts/*.md`（include_str! 编译期嵌入）；最终 system prompt = 框架基础段（固定）+ 场景段（按场景注入） | system prompt |
 
 **设计红线保留：版本类事实永远不进 Prompt。** 写进 system prompt 的"1.21 需要 Java 21"一旦过时即成系统性幻觉源；放入 L1 / L2，每次使用都经工具查证。Prompt 只承载不变的规则与说话方式。Skills 指南与知识库注释以**中文**撰写——它们既是给模型的操作规程（目标模型中文理解强），也是答辩时可展示的领域资产。
 
-**领域检索通道（§8.11，D120）**：MC Wiki / MC百科作为第二类事实来源接入——定位是**背景知识、交叉验证与上游覆盖不到的中文语境问题**（版本沿革、术语解释、教程性内容）；版本存在性 / 下载 URL / 哈希仍**以上游 API 为权威**。检索结果只经工具返回值进入 Agent 上下文，不进 Prompt——红线不因新通道松动。
+**领域检索通道（§8.11）**：MC Wiki / MC百科作为第二类事实来源接入——定位是**背景知识、交叉验证与上游覆盖不到的中文语境问题**（版本沿革、术语解释、教程性内容）；版本存在性 / 下载 URL / 哈希仍**以上游 API 为权威**。检索结果只经工具返回值进入 Agent 上下文，不进 Prompt——红线不因新通道松动。
 
 **取舍：不使用 RAG / 向量检索。** 本域事实为枚举型、KB 级、结构规整，精确查表优于语义检索；每条事实要求确定性正确；embedding 调用成本按 R6 计入，能省则省。Skills 的"按需加载"已解决长文档的上下文路由问题。
 
 ### 8.6 store / config / cli
 
 - `store`：数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`），布局 `{sessions, profiles, usage, runtime}/`。会话 = 消息流 JSONL 逐条追加（崩溃可恢复）+ 元数据快照；`sessions list/show/export` 查看、回放、导出 JSON（自动打码）；档案 `profiles/`。
-- **Profile（部署档案）**：部署方案的结构化快照（方案 + 产物清单 + 时间戳），由 Agent 经 `save_profile` 工具落盘、`load_profile` 读回会话上下文；它是记录产物与复用载体（US3），不是流程关卡。字段草案（M2 实现期可微调）：`profile_id`、`created_at`、`account`（Online / Offline{whitelist} / Hybrid{auth}）、`software`（Vanilla / Spigot / Paper{build} / Fabric{loader}）、`mc_version`、`java`（required_major + runtime 路径）、`jvm_memory_mb`、`mods`（project / version / url / sha1）、`network`（Lan / Direct{port} / Tunnel{provider, endpoint}）、`world`（New / Existing{path}）、`artifacts`（实际产物清单：jar / 脚本 / 日志路径）、`notes`（风险提示）。
+- **Profile（部署档案）**：部署方案的结构化快照（方案 + 产物清单 + 时间戳），由 Agent 经 `save_profile` 工具落盘、`load_profile` 读回会话上下文；它是记录产物与复用载体（US3），不是流程关卡。字段定稿：`profile_id`（时间戳短 id，如 `20260903-142530`）、`created_at`、`account`（Online / Offline{whitelist} / Hybrid{auth}）、`software`（Vanilla / Spigot / Paper{build} / Fabric{loader}）、`mc_version`、`java`（required_major + runtime 路径）、`jvm_memory_mb`、`mods`（[{slug, version_id, file_name, sha1}]）、`network`（Lan / Direct{port} / Tunnel{provider, endpoint}）、`world`（New / Existing{path}）、`artifacts`（[{kind, path}]：jar / 脚本 / mods 目录 / 日志等实际产物）、`notes`（风险提示）。落盘 `~/.mcha/profiles/<profile_id>.json`，存取工具细节见 §8.12。
 - `config`（R3，配置与首次启动）：
   - **存储**：`~/.mcha/config.toml`（除 Key 外的一切）+ `~/.mcha/.env`（仅 API Key，环境变量 `MCHA_API_KEY`，可用 `model.api_key_env` 改用其他变量名）；Key 永不写入 config.toml 与仓库。
   - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。
@@ -403,13 +403,13 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
     [safety]
     confirm_level = "standard"  # paranoid | standard | auto（§12）
 
-    [network]                   # 下载镜像（D115，§8.10）
+    [network]                   # 下载镜像（§8.10）
     mojang_mirror = "bmclapi"   # bmclapi | off | 自定义基础URL
     adoptium_mirror = "tuna"    # tuna | off
 
-    [retrieval]                 # wiki 检索来源注册（D120，§8.11）
+    [retrieval]                 # wiki 检索来源注册（§8.11）
     mcwiki = "https://wiki.biligame.com/mc/api.php"
-    # mcmod = ""                # mod 步骤（M2.2）接入
+    # mcmod = ""                # 随 mod 场景接入
 
     [search]
     backend = ""                # 空 = 无搜索后端（web_search 返回结构化错误）
@@ -419,10 +419,10 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
   - **启动校验**：必填项缺失时不进入会话，打印可复制的配置模板与缺失项说明。
 - `cli`：`mcha`（无子命令）进入交互会话；`mcha new "…"` 预填首条消息的快捷方式；`mcha --continue` 接续最近会话、`mcha --resume` 列出历史会话选择恢复；管理子命令 `config` / `usage` / `sessions` / `profiles`。
 
-**会话界面设计（FR-02 / FR-06 的体验层，M1 交付；风格对标 Claude Code / Codex 类产品）**
+**会话界面设计（FR-02 / FR-06 的体验层；风格对标 Claude Code / Codex 类产品）**
 
 - **布局：inline 滚动流，不接管整屏**（不采用 ratatui 式全屏 TUI）。理由：与终端滚动缓冲共存，长会话可回看、可复制；屏幕渲染流与会话落盘的消息流同构，R5 的"非黑盒"直接可见；避免全屏 TUI 的滚动区 / 焦点管理复杂度，答辩可解释。输入为普通行输入（`> ` 前缀）；回合执行中显示活动状态与"Ctrl-C 打断"提示。
-- **斜杠命令（REPL 内置）**：M1 最小集 `/exit`（退出并显示会话汇总）、`/usage`（显示本会话累计用量）、`/help`；`/sessions`（列出 / 恢复历史会话）随 R5 完善。
+- **斜杠命令（REPL 内置）**：最小集 `/exit`（退出并显示会话汇总）、`/usage`（显示本会话累计用量）、`/help`；`/sessions`（列出 / 恢复历史会话）随 R5 完善。
 - **终端兼容**：启动时检测 Unicode 渲染能力，不支持 `⏺ ✻ ⎿ ✓` 的环境（老 conhost / GBK 代码页）自动降级 ASCII 符号集。
 - **语义化渲染块规范**——每种事件一个视觉样式，符号 + 颜色 + 缩进三层区分（效果示意见 §4.2）：
 
@@ -441,7 +441,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | 退出 | `/exit`、提示符处 Ctrl-D 或 Ctrl-C | 打印会话结束汇总后退出；消息流已逐条落盘，随时可恢复（R5） |
 | 打断 | 取消 | `⏹ 已打断`，会话保留、回到提示符 |
 
-- **流式策略**：LLM 文本与思考增量按原样流式直显（等宽）；Markdown 结构化渲染只用于回合结束的静态块与方案摘要——全流式 Markdown 渲染复杂度高，留作后续迭代，不影响 M1 体验主干。**显示层折叠 / 省略只影响终端**：完整内容照常落盘（R5）、照常回传模型，界面点到为止。
+- **流式策略**：LLM 文本与思考增量按原样流式直显（等宽）；Markdown 结构化渲染只用于回合结束的静态块与方案摘要——全流式 Markdown 渲染复杂度高，留作后续迭代，不影响体验主干。**显示层折叠 / 省略只影响终端**：完整内容照常落盘（R5）、照常回传模型，界面点到为止。
 - **板块呼吸感**：回合内跨板块（思考 / 文本 / 工具）时渲染器自动补空行；提示符前也预留空行——长回合里各视觉块保持清晰分隔。
 - **实现组件**：crossterm（颜色 / 样式 / 光标）+ indicatif（spinner、多进度条）+ dialoguer（选项问答）+ termimad（Markdown 静态块）。**渲染器是事件总线的一个订阅者**（与 store 落盘并列）——R4/R5 是同一数据流的两个视图，界面不维护独立状态。
 
@@ -461,7 +461,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | 网络     | 走全局代理 / 镜像（国内默认清华 TUNA Adoptium 镜像）                | 国内可达性统一解法                       |
 | 结果     | 绝对路径写入档案；起服一律用该路径                                  | 不依赖 PATH，跨会话可复现                |
 
-供给拆分为两个工具（D117）：`check_java`（ReadOnly——PATH / JAVA_HOME / 受管目录扫描，`java -version` 解析 major，返回全部发现）与 `ensure_java`（Network——确认门只落在真实安装路径上，纯探测免确认）。机器内存等环境事实由 `sys_info`（D116）提供，作为 -Xmx 推荐依据（公式见 §8.10）。
+供给拆分为两个工具：`check_java`（ReadOnly——PATH / JAVA_HOME / 受管目录扫描，`java -version` 解析 major，返回全部发现）与 `ensure_java`（Network——确认门只落在真实安装路径上，纯探测免确认）。机器内存等环境事实由 `sys_info` 提供，作为 -Xmx 推荐依据（公式见 §8.10）。
 
 ### 8.8 内网穿透编排（`tunnel_*` 后端）
 
@@ -481,7 +481,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 
 诊断是会话中的 Agent 行为（无独立流水线）：`read_server_log(path, tail)` 读日志 → `analyze_log` 内部跑错误模式库（正则 / 关键词 → 候选根因 + 修复动作 + 置信度）→ LLM 结合会话上下文定夺 → 修复经工具执行（危险动作确认）→ 验证。模式库新增 = 加一行 TOML；`1.21.11 > 26.2` 类版本比较错误本身入库（呼应基线实验）。
 
-### 8.10 服务器设施实现细节（M2.1，D115–D119）
+### 8.10 服务器设施实现细节
 
 本节是 FR-09 / FR-10 / FR-11 / FR-14 与定制 1/2 设施部分的技术细则。
 
@@ -492,7 +492,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
   - `java_compat.toml`：`[[ranges]] min_mc / max_mc / java_major / note` 区间表（实测 2026-09-02 口径：26.x 年份版本线 → 25，1.20.5–1.x → 21，1.18–1.20.4 → 17，1.17 → 16/17，≤1.16 → 8+）；`check_version_compat` 的静态后端。
   - `server_software.toml`：软件 × 支持版本范围 × 下载渠道 × 哈希可信度说明（getbukkit / Fabric 无官方整包哈希如实标注）。
 
-**下载渠道与镜像（D115）**
+**下载渠道与镜像**
 
 | 渠道 | 端点 | 哈希 | 默认镜像 |
 | --- | --- | --- | --- |
@@ -511,11 +511,11 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 - 产物四件：`eula.txt`（`eula_accepted=false` 时拒绝生成并提示 Agent 先经 ask_user 确认）、`server.properties`（内置完整默认键表 + Agent 覆盖项渲染，端口默认 25565）、`whitelist.json`（离线 UUID：Java `nameUUIDFromBytes(("OfflinePlayer:"+name) UTF_8)` 口径 = MD5 摘要后置 RFC 4122 version=3、variant=IETF；md-5 crate；缺 uuid 字段会被服务端静默丢弃——实测教训留痕）、**start.bat + start.sh 双脚本**（java 绝对路径 + `-Xmx` + `-jar server.jar nogui`；bat 含 `pause`，sh 含 `cd "$(dirname "$0")"`）。
 - 下载的服务端 jar 统一改名 `server.jar`，原始文件名记入轨迹（交付语义配套约定，屏蔽渠道 jar 名差异）。
 
-**进程生命周期（FR-14，D118）**
+**进程生命周期（FR-14）**
 
 - `start_server`：直接 spawn java（不经 .bat，规避编码 / 弹窗问题；脚本供用户日后手动启动），日志行流为进度事件；**就绪特征** = 日志匹配 `Done (x.xxx)!`（120s 超时未就绪返回日志尾部）；崩溃感知 = 进程非零退出 / 日志异常特征初筛；工具实例持 `Mutex<Option<ManagedProcess>>`，同刻仅一台托管服务器。
 - 进程树终结：Windows `taskkill /PID x /T /F`，Unix 进程组 kill；Drop 守卫兜底。
-- **交付语义（D118）**：mcha 退出即停托管进程（防孤儿）；服务器长期运行以交付的 start 脚本为准——"Agent 演示期间管理，最终交付物是目录 + 脚本"。
+- **交付语义**：mcha 退出即停托管进程（防孤儿）；服务器长期运行以交付的 start 脚本为准——"Agent 演示期间管理，最终交付物是目录 + 脚本"。
 - `stop_server`：stdin 写 `stop` 优雅停 → 超时强杀；`server_status`：托管状态 + 最近日志摘要。
 
 **连通验证**
@@ -523,17 +523,67 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 - `probe_port`（ReadOnly）：`mode=bind`（部署前端口占用检测）/ `mode=connect`（监听验证）。
 - `mc_ping`（ReadOnly）：纯 Rust 手写 SLP（1.7+ 现代协议）——VarInt 长度帧 → handshake 包（next_state=1）→ status request → 解析 JSON（version.name / players / MOTD）；超时 5s；仅连本机 / 用户明确目标。
 
-**部署前确定性校验（check_plan，D119）**
+**部署前确定性校验（check_plan）**
 
-checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 组合可用（知识库 + 上游）；② Java 大版本匹配（java_compat 区间）；③ online-mode 与账号类型一致；④ EULA 已确认；⑤ 内存范围 `512 ≤ Xmx ≤ 总内存 − 1024`；⑥ 端口合法（1025–65535）且未被占用；⑦ 离线模式 ↔ 白名单配套——默认要求启用，用户明确拒绝时 Agent 传 `whitelist_disabled_ack=true` 放行并留痕（确定性闸门与用户意愿两全）；⑧ server_dir 冲突（已存在非空时警示）。
+checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 组合可用（知识库 + 上游）；② Java 大版本匹配（java_compat 区间）；③ online-mode 与账号类型一致；④ EULA 已确认；⑤ 内存范围 `512 ≤ Xmx ≤ 总内存 − 1024`；⑥ 端口合法（1025–65535）且未被占用；⑦ 离线模式 ↔ 白名单配套——默认要求启用，用户明确拒绝时 Agent 传 `whitelist_disabled_ack=true` 放行并留痕（确定性闸门与用户意愿两全）；⑧ server_dir 冲突（已存在非空时警示）；⑨ mod 兼容性——software=fabric 且带 mod 意图清单时，逐项重验 version 的 `game_versions` / `loaders` 覆盖目标 mc_version 与 loader。
 
-### 8.11 领域检索通道（wiki_search / wiki_page，D120）
+### 8.11 领域检索通道（wiki_search / wiki_page）
 
 - **工具对（ReadOnly）**：`wiki_search(source, query, limit)` → [{标题, 纯文本摘要, URL}]；`wiki_page(source, title, max_chars)` → 页面正文纯文本（截断；超限走大输出落盘规则）。
-- **来源注册**（config `[retrieval]`）：`mcwiki = https://wiki.biligame.com/mc/api.php`（M2.1 实现）；`mcmod`（M2.2 随 mod 步骤接入）。来源域属下载白名单同级的固定清单。
+- **来源注册**（config `[retrieval]`）：`mcwiki = https://wiki.biligame.com/mc/api.php`；`mcmod`（随 mod 场景接入）。来源域属下载白名单同级的固定清单。
 - **mcwiki 后端**：标准 MediaWiki API——搜索 `action=query&list=search`；正文走 `action=parse` 取 HTML 后去标签（实测 B站 Wiki 未装 TextExtracts，`prop=extracts` 不可用）。
-- **mcmod 后端（M2.2 规格，本批留档）**：无官方 API；`search.mcmod.cn/s?key=` 服务端渲染 HTML 解析（标题 / 英文别名 / 简介 / `class/NNN.html` 地址），拟引入 `scraper` crate；mod 主页含版本适配表（mod 步骤的核心数据源）；访问频率自律、解析失败结构化报错不掩盖。
+- **mcmod 后端**：无官方 API；`search.mcmod.cn/s?key=` 服务端渲染 HTML 解析（`scraper` 选择器提取：标题 / 英文别名 / 简介 / `class/NNN.html` 地址）；主页仅做**摘要级**正文提取（复用本节 `strip_html` 兜底）——版本适配表**不解析**（版本事实以上游 API 为权威，适配表留作后置扩展）；URL 前缀强约束（仅 `search.mcmod.cn/s` 与 `www.mcmod.cn/class|item/<id>.html` 形态）；请求间约 800ms 间隔自律、解析失败结构化报错不掩盖。
 - **事实优先级红线（扩展表述）**：版本存在性 / 下载 URL / 哈希以上游 API 为权威；Wiki / 百科结果只作背景知识、交叉验证与中文语境补充——两条通道各自的结构化返回都进轨迹，可回放（R5）。
+
+### 8.12 mod 场景实现细节
+
+本节是 FR-12 / FR-13 / FR-16 与 FR-20 mcmod 后端的技术细则。范围裁定：mod 自动化落地 **Fabric**（`fetch_server_jar` 已支持），Forge 维持指导模式，NeoForge 不在本期。FR-12（清单安装）与 FR-13（自然语言推荐）共用同一套工具，差别只在入口：前者用户给清单直接 resolve，后者 Agent 先检索推荐、经确认再 resolve。
+
+**Modrinth 上游客户端（`knowledge/upstream/modrinth.rs`）**
+
+- API v2，免 key；遵守社区限额（请求间最小间隔自律）；统一 UA `mcha/<版本>`。
+- 端点：`GET /v2/search`（facets：`project_type:mod`，可选 `versions:<mc>` / `categories:<loader>`）；`GET /v2/project/{slug}/version`（`game_versions` / `loaders` 查询参数过滤）；`GET /v2/versions?ids=[..]` 批量重取（安装期权威数据源）。
+- 版本文件结构：`url` / `filename` / `hashes.sha1` / `hashes.sha512` / `size`；依赖经 `dependencies`（`project_id` + `dependency_type`，仅 `required` 入闭包）。
+
+**mod 工具三段式**
+
+| 工具 | 权限 | 参数 | 语义 |
+| --- | --- | --- | --- |
+| `search_mods` | ReadOnly | `query`（中英皆可）、`mc_version?`、`loader?`、`limit?`（默认 5） | 别名表命中 → 直接查 slug（免检索歧义）；否则 `/v2/search` facets 检索；返回 slug / 标题 / 中文别名命中标注 / 简介 / 下载量 / 版本覆盖 |
+| `resolve_mod` | ReadOnly | `mods`（字符串数组，中英/slug 混排）、`mc_version`、`loader` | 逐项：别名解析 → 检索精确匹配（**唯一命中才通过**；多命中返回候选交 Agent 经 ask_user 澄清；零命中结构化报错）→ 版本匹配 → BFS 依赖闭包 → 输出**意图清单** + 每项入选理由（轨迹可回放，R5） |
+| `install_mods` | Network | `server_dir`（路径收敛校验）、`manifest`（resolve_mod 输出的意图清单） | 批量重查 `/v2/versions?ids` → 逐项下载 → sha1 必校验 + sha512 双校验 → 原子落 `<server_dir>/mods/`；进度逐文件推送、取消全程生效 |
+
+三段式理由：检索（可能多轮试探）与解析（确定性）与执行（唯一落盘点）分离，确认门只落在真实安装上（与 Java 供给的探测 / 安装拆分同理）；resolve 无副作用可放心重试，install 失败即结构化回环（NFR-3）。
+
+**安装语义**
+
+- **意图清单与权威数据分离**：manifest 只承载意图（slug + version_id + file_name 展示名）；URL 与哈希在安装时经批量端点**实时重取**——LLM 转手抄错 / 篡改均不影响正确性，"下载 URL / 哈希以上游 API 为权威"红线贯彻到安装期。
+- 下载白名单：仅 `cdn.modrinth.com`（对 API 下发的 `url` 域强校验）。
+- 原子写：临时文件下载校验通过后重命名落位（tempfile 模式，同服务端 jar 下载惯例）。
+- 冲突策略：目标同名文件**哈希一致则跳过**（安装幂等，中断重跑安全）；**不一致则报错列出冲突**——不静默覆盖用户手动安装，交 Agent 问用户。
+- 下载失败 / 哈希不符 → 结构化错误回传 Agent（哪个文件、哪步、建议动作），失败回环。
+
+**依赖闭包算法**
+
+- 从每个 mod 的兼容版本出发，`dependencies` 中 `dependency_type=required` 的 project 入闭包（optional / incompatible / embedded 不入）；BFS 逐层展开。
+- project_id 级去重 + 环检测（访问标记）+ 深度上限（默认 10，防清单爆炸）；每项记录 `dependency_of` 链与入选理由。
+- 版本选取：该 project 在 `game_versions` 含目标 MC 版本、`loaders` 含目标加载器的版本中取最新（Modrinth 返回序即时间序）；闭包内依赖自身的目标版本以其声明的兼容范围为准。
+
+**中文别名表（`assets/knowledge/mod_aliases.toml`）**
+
+- L1 静态知识：`[[mods]]` 含 `slug` / `name` / `aliases[]`（中文常见译名与简称，如"暮色森林"→ twilight_forest、"机械动力"→ create）；初版收录 **15–20 个高频 mod**（暮色森林、JEI、Create、Sodium、Lithium 等），带来源与采集日期，可独立更新。
+- 双通道：别名命中直接查 slug；未命中走 `/v2/search`。零命中如实报错（"Modrinth 无收录"，如 OptiFine 自有分发不在 Modrinth，Agent 转人工指引）。
+- 红线不变：别名表只承载"叫法 → 项目"映射，**不承载版本兼容事实**（§8.5）。
+
+**FR-13 自然语言推荐（不加专用工具）**
+
+- Agent 规程（写入 server-setup Skill）：问清玩法偏好与内容风格 → 翻译为多组英文搜索词调 `search_mods` → 汇总候选（推荐理由 / 下载量 / 依赖情况）→ `ask_user` 勾选确认 → 走 resolve → install。LLM 判断力 + 用户确认，零新增代码。
+
+**Profile 存取（FR-16 / US3）**
+
+- `save_profile`（Write，确认门）：Agent 填 Profile 结构（§8.6 定稿字段）→ 工具 schemars 校验 + server_dir 存在性核对 → JSON 原子落 `~/.mcha/profiles/<profile_id>.json`（`profile_id = YYYYMMDD-HHMMSS`）→ 返回路径与摘要。
+- `load_profile`（ReadOnly）：`profile_id` 或 `latest` → 全文读回上下文（含 mods 明细与 artifacts 清单），Agent 对照现状补差复用。
+- CLI：`mcha profiles list` / `profiles show <id>` 薄壳查看（打码规则同会话导出，NFR-2）。
 
 ## 9. R1–R6 实现设计（课程硬性要求逐条落地）
 
@@ -566,11 +616,11 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 | 版本解析          | semver                       | 手写         | 拒绝非语义化输入是定制 2 第一道闸                      |
 | 哈希校验          | sha1 + sha2（RustCrypto）    | —            | Mojang sha1 / Modrinth sha1+sha512 / Adoptium sha256   |
 | 压缩解压          | zip                          | 手写         | Java 供给解压，纯 Rust                                 |
-| 环境探测          | sysinfo                      | 各平台命令   | sys_info 工具（D116）；跨平台、免解析 shell 输出       |
+| 环境探测          | sysinfo                      | 各平台命令   | sys_info 工具；跨平台、免解析 shell 输出               |
 | 哈希（MD5）       | md-5（RustCrypto）           | —            | 白名单离线 UUID（nameUUIDFromBytes v3 口径）           |
 | 哈希（SHA1）      | sha1（RustCrypto）           | —            | Mojang 服务端官方 sha1 校验                            |
 | tar 解包 / gzip   | tar + flate2                 | 仅 zip       | ensure_java 的 Unix 包（tar.gz）解压；Windows 用 zip   |
-| HTML 解析         | scraper（M2.2 引入）         | 正则         | MC百科后端 HTML 解析（§8.11）                          |
+| HTML 解析         | scraper（mod 场景引入）     | 正则         | MC百科后端 HTML 解析（§8.11）                          |
 | 正则              | regex                        | —            | 错误模式库匹配（§8.9）                                 |
 | 日志与观测        | tracing + tracing-subscriber | log          | 结构化分模块日志                                       |
 | 时间              | chrono                       | time         | 落盘时间戳统一 RFC3339                                 |
@@ -581,10 +631,10 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 
 | 数据                     | 来源                                                                                       | 用途                         | 备注                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------------- |
-| MC 版本清单 / 原版服务端 | Mojang piston-meta API                                                                     | 版本校验、原版服下载         | 国内默认 BMCLAPI 镜像（下行），可配直连（D115）                               |
-| Mojang 资源镜像          | BMCLAPI（`bmclapi2.bangbang93.com`）                                                       | 官方域不可达时的默认下载通道 | 域名重写实现，`[network]` 可关（D115）                                        |
+| MC 版本清单 / 原版服务端 | Mojang piston-meta API                                                                     | 版本校验、原版服下载         | 国内默认 BMCLAPI 镜像（下行），可配直连                               |
+| Mojang 资源镜像          | BMCLAPI（`bmclapi2.bangbang93.com`）                                                       | 官方域不可达时的默认下载通道 | 域名重写实现，`[network]` 可关                                        |
 | MC 中文 Wiki             | B站 MC Wiki MediaWiki API（`wiki.biligame.com/mc/api.php`）                                | `wiki_search` / `wiki_page`（§8.11） | 实测 `list=search` 可用；背景知识与交叉验证通道                |
-| MC百科                   | `search.mcmod.cn`（服务端渲染 HTML）                                                       | mcmod 检索后端（M2.2）       | 无官方 API，HTML 解析自担（D120）                                             |
+| MC百科                   | `search.mcmod.cn`（服务端渲染 HTML）                                                       | mcmod 检索后端               | 无官方 API，HTML 解析自担                                       |
 | Paper 构建与下载         | PaperMC Fill API v3                                                                        | Paper 服下载                 | 同上                                                                          |
 | Fabric 版本与安装器      | Fabric meta / maven                                                                        | Fabric 服搭建                | 同上                                                                          |
 | Spigot jar | getbukkit 下载页抓取解析（下载页令牌 → 302 → CDN 直链） | Spigot 服下载 | 无官方哈希，轨迹明示第三方来源 |
@@ -599,14 +649,14 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 - 错误分层：模块级 thiserror 枚举 → `AppError`；工具错误结构化回传 Agent（NFR-3）；用户可见错误必须附"下一步怎么办"。
 - **确认门（FR-04）**：按工具 `Permission` 分级——`ReadOnly` 免确认；`Write`（写文件）/ `Execute`（跑命令、起停进程）/ `Network`（下载大文件）默认确认，显示关键内容（命令行、目标路径、写入摘要）后**三选一：y 本次允许 / a 本会话允许此工具 / n 拒绝**（拒绝以结构化错误回传 Agent，由其调整方案）；`[safety] confirm_level = paranoid | standard | auto` 可调（默认 standard；auto 全部免确认，限演示 / CI 并留痕）。
 - **路径收敛**：文件类工具的目标路径必须解析在工作区或数据目录内，越界拒绝（结构化错误回传 Agent）。
-- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域（M2.1 起实施）：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`；M2.2 追加 `search.mcmod.cn` / `www.mcmod.cn`；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
+- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`、`api.modrinth.com` / `cdn.modrinth.com`（mod 下载仅此域）、`search.mcmod.cn` / `www.mcmod.cn`；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
 - **进程安全**：子进程统一托管（进程组 / Job Object），Drop 守卫保证取消 / 退出时杀干净，不留孤儿。
 - 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
 - 离线模式风险：白名单建议与后果提示写入决策指南（定制 1），Agent 必须向用户明示。
 
 ## 13. 测试与验收策略
 
-- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）。
+- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、Modrinth 客户端（fixture mock）、依赖闭包黄金用例（含环检测 / 深度上限）、mcmod 搜索页解析（fixture HTML）、Profile save/load 往返、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）。
 - **Loop 级集成**：`LlmClient` trait + Fake 实现（脚本化回复与 tool_calls 序列）驱动 Agent Loop 全流程——不花真钱；断言消息流形状、工具调用顺序、停止条件、取消语义。
 - 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
@@ -623,7 +673,7 @@ src/
 │   ├── general/       # 通用工具：fs / shell / http / search / ask_user / load_skill
 │   └── mod.rs
 ├── mc/                # 开服领域工具后端：sys_info / java / server_jar / files / process /
-│                      #   probe / plan / retrieval（M2.1）；mods / tunnel / diag（后续）
+│                      #   probe / plan / retrieval（已实现）；mods / tunnel / diag（后续）
 ├── knowledge/         # 知识库加载、上游 API 客户端、版本校验管线
 ├── store/             # 会话 / 档案 / 用量持久化
 ├── config/            # AppConfig、价格表、确认策略
@@ -634,10 +684,10 @@ src/
 
 **实现顺序（先框架、后场景）**：
 
-- **M1 Agent 框架**：config → llm → agent（Loop + 确认门 + 上下文管理）→ tools/general → cli（REPL + 渲染 + 打断）→ store → events，含**框架级系统提示词**（§8.5 L4 基础段，随 assets/prompts 交付）。出口标准：纯通用任务验收——用自然语言让 Agent 在受控工作区完成一件多步实事（如"抓取某页面存为文件并统计行数"），全程工具调用留痕可查、可打断、有费用统计。此时它已是一个真正的（小）通用 Agent。
-- **M2 开服场景包（分步实施，D121）**：
-  - **M2.1 服务器设施（当前步）**：S1 knowledge（版本比较器 + `java_compat.toml` + `check_version_compat` + Mojang 客户端）→ S2 `sys_info` + `check_java` → S3 `ensure_java` → S4 `fetch_server_jar`（vanilla → paper → fabric → spigot 逐渠道）→ S5 `write_server_files` → S6 进程三件套 → S7 `probe_port` / `mc_ping` / `check_plan` → S8 `wiki_search` / `wiki_page`（mcwiki 后端 + `[retrieval]`）→ S9 server-setup Skill + 场景提示词 + 框架小改（场景段注入、技能内置根）+ FakeLlm 端到端集成测试。出口标准：**US1 精简版**——版本 + 账号情况 + 端类型一句话 → 本机 `127.0.0.1:25565` 可登录、全程留痕；Forge 为指导模式（D7 修订）；Profile（FR-16）后置。
-  - **M2.2 mod 场景包**：`search_mods` / `resolve_mod` + 中文别名表 + mcmod 检索后端（§8.11 规格）+ `save_profile` / `load_profile`（FR-16）。
-  - **M2.3 内网穿透**：`tunnel_*`（§8.8）；诊断（选做，§8.9）随后。
+- **Agent 框架（已完成）**：config → llm → agent（Loop + 确认门 + 上下文管理）→ tools/general → cli（REPL + 渲染 + 打断）→ store → events，含**框架级系统提示词**（§8.5 L4 基础段，随 assets/prompts 交付）。出口标准：纯通用任务验收——用自然语言让 Agent 在受控工作区完成一件多步实事（如"抓取某页面存为文件并统计行数"），全程工具调用留痕可查、可打断、有费用统计。此时它已是一个真正的（小）通用 Agent。
+- **开服场景包（分步实施）**：
+  - **服务器设施（已完成）**：知识库（MC 版本比较器 + Java 兼容区间表 + 兼容性查证工具 + Mojang 客户端）→ 环境探测与 Java 探测 → Java 自动供给 → 服务端获取（原版 → Paper → Fabric → Spigot 逐渠道）→ 配置文件生成 → 进程托管三件套 → 端口探测 / SLP ping / 部署前校验 → 检索通道（MC Wiki 后端 + `[retrieval]` 来源注册）→ server-setup 决策指南 + 场景提示词 + 框架小改（场景段注入、技能内置根）+ 假 LLM 客户端端到端集成测试。出口标准：**US1 精简版**——版本 + 账号情况 + 端类型一句话 → 本机 `127.0.0.1:25565` 可登录、全程留痕；Forge 为指导模式；Profile（FR-16）后置。
+  - **mod 场景（进行中，细则 §8.12）**：Modrinth 上游客户端（检索 / 项目版本 / 批量重取端点；fixture 单测）→ 中文别名表 + `search_mods` 检索工具 → `resolve_mod` 解析工具（别名解析 → 版本匹配 → 依赖闭包 → 意图清单；黄金用例快照）→ `install_mods` 安装工具（安装期重查 API → 双哈希校验 → 原子落盘 + 进度；冲突分支单测）→ mcmod 检索后端（HTML 解析 + URL 前缀约束）→ Profile 存取（save/load 工具 + `mcha profiles` 子命令）→ 部署前校验 mod 项 + server-setup 决策指南 mod 分支（含 FR-13 推荐规程）+ 提示词 / 工具动词表 + 假 LLM 客户端集成测试。出口标准：**US1 完整版（mod 增量）**——"Fabric 1.21.x，装暮色森林和 JEI"一句话 → 依赖解析 + 校验下载落 `mods/` + 起服日志确认 mod 载入（`server_status` 可见）+ Profile 保存 / 读回可复现，全程留痕。
+  - **内网穿透（规划中）**：`tunnel_*`（§8.8）；故障诊断（选做，§8.9）随后。
 
 每模块完成后独立可编译、可运行（先跑通再美化）。
