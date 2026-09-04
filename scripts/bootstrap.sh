@@ -54,5 +54,5 @@ fi
 
 echo
 echo "=== 下一步 ==="
-echo "  运行  mcha setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
-echo "  然后  mcha new     —— 一句话开服"
+echo "  mcha setup   —— 交互式向导完成模型配置与工作区设定（必填仅 3 项）"
+echo "  mcha         —— 运行 Minecraft Host Agent（MCHA）"

@@ -1,6 +1,6 @@
 # Minecraft Host Agent（MCHA）· 需求与设计文档
 
-- **关联**：选题陈述 `docs/topic-statement.md`；基线实验 `experiments/general-agent-baseline.md`；课程要求 `docs/requirements.md`；Agent 技术参考 `docs/agent-architecture.md`；设计决策记录 `docs/decisions.md`
+- **关联**：选题陈述 `docs/topic-statement.md`；课程要求 `docs/requirements.md`；Agent 技术参考 `docs/agent-architecture.md`；设计决策记录 `docs/decisions.md`
 
 ## 0. 设计立场：为什么 MCHA 首先是一个 Agent
 
@@ -44,7 +44,7 @@ Java 自动供给、内网穿透编排、上游 API 客户端、价格表与预�
 
 ### 2.3 通用 Agent 为什么解决不好（基线实验证据）
 
-基线实验（opencode + GLM-5.2 @ Windows 11，记录见 `experiments/`）：在专家全程引导下通用 Agent 能搭起服务器，但每隔几步出现一次偏差——
+基线实验（opencode + GLM-5.2 @ Windows 11；实验文档已移除，过程记录见 Git 历史）：在专家全程引导下通用 Agent 能搭起服务器，但每隔几步出现一次偏差——
 
 | 实验观察到的失败模式                           | 对应痛点      | 本产品的应对（→ §3）                      |
 | ---------------------------------------------- | ------------- | ----------------------------------------- |

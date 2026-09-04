@@ -25,7 +25,7 @@
 ## 当前进度
 
 - [x] 选题确认（`docs/topic-statement.md`）
-- [x] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows，手册见 `experiments/general-agent-baseline.md`）
+- [x] 通用 Agent 基线实验（opencode + GLM-5.2 @ Windows；实验文档已移除，记录见 Git 历史）
 - [x] 需求 / 设计文档初稿（`docs/project-design.md` 初步定稿）
 - [x] v2 设计重构：Agent-First 理念，设计文档 v1.0（2026-09-01）
 - [x] M1 Agent 框架：Loop + 通用工具集 + REPL 会话 + R5/R6 骨架（§14 出口标准）
@@ -37,7 +37,7 @@
 - [x] M2.3 内网穿透（tunnel_*，FR-17）：樱花frp API v4 七件套（check_tunnel/ensure_frpc/select_tunnel_node/create_tunnel/start_tunnel/tunnel_status/delete_tunnel）、frpc 独立窗口 + MD5 校验、setup 可选步骤（注册/登录双入口）+ /token 命令（D135–D139，2026-09-04）
 - [ ] P1：日志诊断（FR-18 选做）
 - [ ] 提交版设计文档定稿
-- [ ] README 补全配置与演示章节
+- [x] README 补全配置与演示章节（2026-09-04 面向用户整体重写）
 
 ## 常用命令
 
@@ -73,7 +73,6 @@ cargo clippy -- -D warnings    # 静态检查
 ```text
 .
 ├── docs/           # 文档：课程提供的作业要求与参考资料（勿改）+ 本项目自有文档（如选题陈述）
-├── experiments/    # 通用 Agent 基线实验（手册与运行记录）
 ├── src/            # Rust 源代码（当前仅 main.rs 占位）
 ├── Cargo.toml
 ├── README.md       # 项目说明（编译 / 配置 / 运行 / 演示）
