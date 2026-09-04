@@ -180,16 +180,21 @@ pub fn sessions_show(data_dir: &Path, id: &str) -> anyhow::Result<()> {
 pub fn sessions_export(data_dir: &Path, id: &str, out_path: Option<&Path>) -> anyhow::Result<()> {
     let jsonl = data_dir.join("sessions").join(format!("{id}.jsonl"));
     let session = Session::load(&jsonl, data_dir).with_context(|| format!("找不到会话 {id}"))?;
-    // 导出打码（NFR-2）：遮蔽密钥与公网 IP
+    // 导出打码（NFR-2）：遮蔽密钥（LLM Key / CurseForge Key / 樱花frp token）与公网 IP
     let api_key = AppConfig::load(data_dir)
         .ok()
         .and_then(|loaded| loaded.config.api_key().ok())
         .unwrap_or_default();
-    let secrets: Vec<String> = if api_key.is_empty() {
-        Vec::new()
-    } else {
-        vec![api_key]
-    };
+    let mut secrets: Vec<String> = Vec::new();
+    if !api_key.is_empty() {
+        secrets.push(api_key);
+    }
+    for var in ["MCHA_CURSEFORGE_KEY", "MCHA_NATFRP_TOKEN"] {
+        let value = std::env::var(var).unwrap_or_default();
+        if !value.trim().is_empty() {
+            secrets.push(value);
+        }
+    }
     let payload = serde_json::json!({
         "meta": session.meta,
         "totals": {

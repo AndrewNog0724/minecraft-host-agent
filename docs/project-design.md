@@ -73,7 +73,7 @@ Java 自动供给、内网穿透编排、上游 API 客户端、价格表与预�
 
 ### 定制 3：内网穿透编排工具包（对应 P4，默认樱花frp）
 
-- **内容**：以樱花frp 为默认：服主完成一次性注册 / 实名 / 获取访问密钥后，Agent 经官方 API v4 工具（`tunnel_*`，见 §8.8）全自动完成——节点选择 → 创建 TCP 隧道 → 官方渠道下载并校验 frpc → 拉起托管 → 端到端验证（TCP + MC SLP ping）→ 生成"朋友们怎么连"说明卡片。选节点、建隧道、排故障由 Agent 编排；节点打分等确定性算法下沉为工具内部逻辑。有公网 IP 的场景给端口映射指引；自建 frp / Tailscale 为备选方案。
+- **内容**：以樱花frp 为默认：服主完成一次性注册 / 实名 / 获取访问密钥后，Agent 经官方 API v4 工具（`tunnel_*`，见 §8.8）全自动完成——节点选择 → 创建 TCP 隧道 → 官方渠道下载并校验 frpc → 独立窗口拉起 → 端到端验证（TCP + MC SLP ping）→ 生成"朋友们怎么连"说明卡片。选节点、建隧道、排故障由 Agent 编排；节点打分等确定性算法下沉为工具内部逻辑。有公网 IP 的场景给端口映射指引；自建 frp / Tailscale 为备选方案。
 - **验收**：无公网 IP 环境下，从 token 就绪到外部客户端可连入，Agent 在会话中自主完成（人工步骤仅限注册 / 实名 / 粘贴 token）。
 
 ### 定制 4：MC 崩溃日志诊断（对应 P3，选做）
@@ -343,7 +343,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 | `start_server` / `server_status` | 独立终端窗口启动（与手动脚本一致，D134）、latest.log 就绪轮询、端口探测 + 日志尾部推断（D134 修订 D118 托管模型）            |
 | `probe_port` / `mc_ping`                         | 本机端口验证 / SLP ping（取回 MOTD / 版本 / 人数）                           |
 | `save_profile` / `load_profile`                  | 部署方案快照与产物清单存取（§8.6/§8.12）                                     |
-| `tunnel_*`                                       | 樱花frp 编排：token 校验 / 节点打分 / 建隧道 / frpc 托管 / 端到端验证        |
+| `tunnel_*`（七件套）                              | 樱花frp 编排（§8.8）：check_tunnel / ensure_frpc / select_tunnel_node / create_tunnel / start_tunnel / tunnel_status / delete_tunnel |
 | `read_server_log` / `analyze_log`（选做）        | 日志尾部读取；错误模式库确定性匹配 → 候选根因 + 修复动作                     |
 
 分层理由：领域工具是"高频复合操作的可靠封装"（一次调用 = 一个完整语义动作，内建校验与进度），降低 LLM 出错面与轮数；通用工具是逃生舱——领域工具未覆盖或失败时，Agent 可用 `run_command` + `http_download` 等手工完成任务，保证任何真实世界的意外都有出路。
@@ -385,8 +385,9 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 - `store`：数据目录 `~/.mcha/`（Windows `%APPDATA%\mcha\`），布局 `{sessions, profiles, usage, runtime}/`。会话 = 消息流 JSONL 逐条追加（崩溃可恢复）+ 元数据快照；`sessions list/show/export` 查看、回放、导出 JSON（自动打码）；档案 `profiles/`。
 - **Profile（部署档案）**：部署方案的结构化快照（方案 + 产物清单 + 时间戳），由 Agent 经 `save_profile` 工具落盘、`load_profile` 读回会话上下文；它是记录产物与复用载体（US3），不是流程关卡。字段定稿：`profile_id`（时间戳短 id，如 `20260903-142530`）、`created_at`、`account`（Online / Offline{whitelist} / Hybrid{auth}）、`software`（Vanilla / Spigot / Paper{build} / Fabric{loader}）、`mc_version`、`java`（required_major + runtime 路径）、`jvm_memory_mb`、`mods`（[{slug, version_id, file_name, sha1}]）、`network`（Lan / Direct{port} / Tunnel{provider, endpoint}）、`world`（New / Existing{path}）、`artifacts`（[{kind, path}]：jar / 脚本 / mods 目录 / 日志等实际产物）、`notes`（风险提示）。落盘 `~/.mcha/profiles/<profile_id>.json`，存取工具细节见 §8.12。
 - `config`（R3，配置与首次启动）：
-  - **存储**：`~/.mcha/config.toml`（除 Key 外的一切）+ `~/.mcha/.env`（各类 Key：`MCHA_API_KEY` 为 LLM Key，可用 `model.api_key_env` 改名；`MCHA_CURSEFORGE_KEY` 为 CurseForge API Key，可选）；Key 永不写入 config.toml 与仓库。
-  - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。**向导可重复运行**：`mcha setup` 读取已有配置作为默认值（回车保留当前值），检测到已有 Key 时显示"已设置，回车保留"；`.env` 采用**合并写入**（只更新被修改的项，其余 Key 原样保留）。**可选步骤**：向导尾部提供 CurseForge API Key 配置（默认跳过；未配置时 CF 通道自动使用国内镜像，功能完整可用；选择配置时给出分步申请指引）。
+  - **存储**：`~/.mcha/config.toml`（除 Key 外的一切）+ `~/.mcha/.env`（各类 Key：`MCHA_API_KEY` 为 LLM Key，可用 `model.api_key_env` 改名；`MCHA_CURSEFORGE_KEY` 为 CurseForge API Key，可选；`MCHA_NATFRP_TOKEN` 为樱花frp 访问密钥，可选）；Key 永不写入 config.toml 与仓库。
+  - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。**向导可重复运行**：`mcha setup` 读取已有配置作为默认值（回车保留当前值），检测到已有 Key 时显示"已设置，回车保留"；`.env` 采用**合并写入**（只更新被修改的项，其余 Key 原样保留）。**可选步骤**：向导尾部提供 CurseForge API Key 配置（默认跳过；未配置时 CF 通道自动使用国内镜像，功能完整可用；选择配置时给出分步申请指引）与樱花frp 访问密钥配置（默认跳过；含**注册与登录两个入口** + 实名认证 + 密钥获取的分步可点击指引）。
+  - **REPL `/token` 命令**：会话进行中补配樱花frp 访问密钥——隐藏输入、合并写 `.env`、同步进程环境与工具上下文；密钥不回显、不经过 LLM 上下文（D136）。
   - **启动自检（非阻断）**：交互会话启动时一次性检查可选项配置状态，对未配置项给出一条紧凑提示（如 CurseForge Key 缺失 → "CF 走国内镜像通道，如需官方 API 可运行 mcha setup 配置 Key"）；不强制、不重复提醒、全部就绪时不输出额外内容。
   - **可点击链接**：向导等用户直出文本中的网址按终端能力渲染——支持 OSC 8 的终端（Windows Terminal / iTerm2 / VTE 系 / mintty 等，白名单检测）输出显式超链接，其余回退纯文本 URL（现代终端自动识别）；`MCHA_NO_HYPERLINK=1` 强制关闭（与 `MCHA_ASCII` 同一降级约定）。工具回传 Agent 的文本内保持纯 URL，不夹带转义序列。
   - **配置文件全景**：
@@ -430,7 +431,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 **会话界面设计（FR-02 / FR-06 的体验层；风格对标 Claude Code / Codex 类产品）**
 
 - **布局：inline 滚动流，不接管整屏**（不采用 ratatui 式全屏 TUI）。理由：与终端滚动缓冲共存，长会话可回看、可复制；屏幕渲染流与会话落盘的消息流同构，R5 的"非黑盒"直接可见；避免全屏 TUI 的滚动区 / 焦点管理复杂度，答辩可解释。输入为普通行输入（`> ` 前缀）；回合执行中显示活动状态与"Ctrl-C 打断"提示。
-- **斜杠命令（REPL 内置）**：最小集 `/exit`（退出并显示会话汇总）、`/usage`（显示本会话累计用量）、`/help`；`/sessions`（列出 / 恢复历史会话）随 R5 完善。
+- **斜杠命令（REPL 内置）**：最小集 `/exit`（退出并显示会话汇总）、`/usage`（显示本会话累计用量）、`/help`；`/sessions`（列出 / 恢复历史会话）随 R5 完善；`/token`（会话内补配樱花frp 访问密钥，D136）。
 - **终端兼容**：启动时检测 Unicode 渲染能力，不支持 `⏺ ✻ ⎿ ✓` 的环境（老 conhost / GBK 代码页）自动降级 ASCII 符号集。
 - **语义化渲染块规范**——每种事件一个视觉样式，符号 + 颜色 + 缩进三层区分（效果示意见 §4.2）：
 
@@ -471,19 +472,38 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 
 供给拆分为两个工具：`check_java`（ReadOnly——PATH / JAVA_HOME / 受管目录扫描，`java -version` 解析 major，返回全部发现）与 `ensure_java`（Network——确认门只落在真实安装路径上，纯探测免确认）。机器内存等环境事实由 `sys_info` 提供，作为 -Xmx 推荐依据（公式见 §8.10）。
 
-### 8.8 内网穿透编排（`tunnel_*` 后端）
+### 8.8 内网穿透编排（`tunnel_*` 后端，FR-17 / 定制 3）
 
-一次性人工步骤：注册 → 实名 → 获取访问密钥 → 粘贴配置（Agent 检测缺失时给出分步引导；注册实名涉及合规与隐私，不做自动化）。token 就绪后的全自动编排链路（工具后端实现规格）：
+**一次性人工步骤**：注册（`www.natfrp.com/auth/register`）或登录已有账号（`/auth/login`）→ 实名认证（管理面板 `www.natfrp.com/user/` 内完成，建隧道硬前置）→ 复制访问密钥（`/user/profile`）→ 粘贴配置。注册与实名涉及合规与隐私，不做自动化；密钥入口见下（setup 向导可选步骤 + `/token` 命令，D136）。token 就绪后的全自动编排（工具后端实现规格，D135/D137）：
 
-1. `GET /system/clients` 取官方 frpc 下载 URL + 哈希 → `http_download` 校验落受管目录；
-2. `GET /user/info` 校验 token / 实名 / 等级；
-3. `GET /nodes` + `/node/stats` → 节点打分（硬过滤：在线、可建隧道、非强制访问认证、VIP 等级、非私有；排序：内地优先 → 负载低 → 非 BETA）——**打分算法为工具内部确定性逻辑**，Agent 传入用户偏好即可；
-4. `POST /tunnels` 建隧道（tcp / 127.0.0.1 / 服务端端口，名称按约定自动生成便于查重复用）；
-5. 拉起 frpc 子进程（`-f <token>:<tunnel_id>` 配置自动拉取，消除手写配置错误类别）；
-6. 解析 frpc 日志就绪特征 → 对 `<节点>:<remote_port>` 先 TCP connect 再 **MC SLP ping**，端到端验证全链路；
-7. 连接说明卡片：地址、朋友连接分步指引、剩余流量、风险提示。
+**事实基线（2026-09-04 抓取 API v4 OpenAPI 规范逐端点核实，D135）**
 
-生命周期：frpc 由进程托管 + Drop 守卫；停机顺序先 frpc 后服务端；复用优先（`GET /tunnels` 按名称查重）；流量查询 `/user/data_plans`、`/tunnel/traffic`。失败模式与诊断要点：API 401/403 → token/实名问题；节点满载 → 换节点重试；frpc 在线但 SLP 超时 → 回查本地监听；安全合规：token 仅存本地并打码；建删隧道频率自律；API 定义 AGPL-3.0 仅调用不复制。
+- 认证：`Authorization: Bearer <访问密钥>`；错误统一 `{code, msg}` JSON。
+- `GET /user/info`：实名状态、用户组等级（节点 VIP 门槛依据）、流量 `[本日消耗, 总剩余]`、隧道数上限、限速字符串；**账户冻结是独立 schema**（`ban` 字段出现即冻结，需识别并如实转述）。
+- `GET /nodes`（flag 位掩码：bit2 可建隧道 / bit3 内地 / bit6 私有 / bit8 强制访问认证 / bit9 离线 / bit10 BETA）+ `GET /node/stats`（在线 / 负载 % / uptime）。
+- `GET /tunnels`（含 `online` 状态）+ `POST /tunnels`（type=tcp、local_ip、local_port、node；`remote` 对 tcp 非必填，留空由平台分配）+ `POST /tunnel/delete`。
+- `GET /system/clients` → `frpc.archs.<os>_<arch>`：官方下载 URL + **MD5** 哈希（32 位十六进制，官方文档 `md5sum` 同口径）+ size；下载域 `nya.globalslb.net`。
+- frpc 启动语法官方确认：`frpc -f <访问密钥>:<隧道ID>`——配置自动拉取，无需手写配置文件。natfrp 文档提示"AI 应引导用户使用 GUI 启动器"，如实留痕取舍：MCHA 是自动化 Agent，GUI 启动器不可编程驱动，frpc CLI + API v4 正是官方为程序化管理设计的路径。
+
+**工具七件套（D137，沿用"探测 / 执行拆分 + 确认门只落真实副作用"纪律）**
+
+| 工具 | 权限 | 语义 |
+| --- | --- | --- |
+| `check_tunnel` | ReadOnly | `/user/info` + `/user/data_plans`：token 有效性、实名、等级、流量余额、隧道额度、冻结状态；frpc 二进制在位与版本检查。Agent 据此走引导或继续编排 |
+| `ensure_frpc` | Network | `/system/clients` 按 OS + ARCH 选包 → 下载（进度条）→ **MD5 校验** → 落 `~/.mcha/runtime/frpc/<ver>/`（Unix chmod 755）；同版本幂等跳过。确认门只落在真实下载（D117 同理） |
+| `select_tunnel_node` | ReadOnly | `/nodes` + `/node/stats` + `/user/info` → **硬过滤**（在线、可建隧道、非强制访问认证、非私有、用户组等级 ≥ 节点 VIP）→ **打分**（内地优先 → 负载低 → 非 BETA → uptime 稳定）→ top N（默认 5）附入选理由。打分为工具内部确定性算法（D138），Agent 只传偏好 |
+| `create_tunnel` | Network（确认门） | 隧道名约定 **`mcha-mc<本地端口>`**（确定性命名）→ `GET /tunnels` 名称查重，命中且本地端口一致则**复用**（幂等自律）→ 否则 `POST /tunnels` 创建。返回 `{tunnel_id, node_host, remote_port}`；同名但端口不同 → 结构化报错交 Agent 问用户 |
+| `start_tunnel` | Execute（确认门） | **先查重**（隧道已 `online` → 提示"疑似已在运行"，不重复拉起）；**独立终端窗口**拉起 `frpc -f <token>:<tunnel_id>`（D135，与 D134 服务器窗口模型同构，mcha 退出不断隧道；Windows `cmd /k` 保窗可读错误，Unix 探测终端模拟器 + 退出留窗）；轮询 API `online=true`（2s 间隔、默认 60s 超时、5s 一行进度，R4；Esc/Ctrl-C 仅打断等待）→ TCP connect `<node_host>:<remote_port>` + mc_ping（SLP，尽力验证——服务器未启动时 TCP 仍应通） |
+| `tunnel_status` | ReadOnly | 诊断快照：API 隧道在线 + 本地端口监听 + 隧道端 mc_ping + 流量余额——US2"朋友连不上了"的排障入口 |
+| `delete_tunnel` | Network（强确认门） | `POST /tunnel/delete`；换节点重建与演示清理用 |
+
+**用户使用流程（三阶段）**
+
+1. **阶段 0·一次性配置（`mcha setup` 可选步骤，D136）**：向导在 CurseForge Key 步骤后新增"樱花frp 访问密钥"——状态行（未配置提示"朋友跨网络联机需要；仅局域网可跳过"/ 已设置回车保留）→ 申请指引（**注册与登录两个入口** + 实名认证 + 密钥获取页，可点击链接、OSC 8 降级）→ Password 隐藏输入 → `.env` 写 `MCHA_NATFRP_TOKEN`（`merge_env_file` 合并写入）。
+2. **阶段 1·会话内全自动编排（US1 网络分支增量）**：`ask_user` 网络拓扑 → 无公网 IP → `check_tunnel`（未配置 token → 引导 `/token` 或 `mcha setup`，密钥不经过 LLM 上下文；未实名 → 阻塞指引）→ `ensure_frpc` → `select_tunnel_node` → `ask_user` 确认节点（默认推荐第一位，D138）→ `create_tunnel` → 提示起服（若未起）→ `start_tunnel` → **连接说明卡片**（地址 `node_host:remote_port`、朋友怎么连、流量余额、限速、注意事项——Markdown 静态块）→ `save_profile` 落 `network=Tunnel{provider, endpoint}`。
+3. **阶段 2·同一会话排障（US2）**："朋友连不上了" → `tunnel_status` → 按快照定位（隧道不在线 → frpc 窗口被关，重新 `start_tunnel`；本地端口不通 → 服务器窗口问题走诊断；TCP 通 SLP 不通 → 服务器未就绪）→ 修复动作。
+
+**生命周期与失败模式**：frpc 与服务器窗口同为独立进程、与 mcha 生命周期解耦（停机顺序由用户决定）；`online=true` 但非本机拉起（用户在别处用启动器连了同一隧道）时如实提示重复。失败映射：API 401 → token 无效；403 → 实名 / 等级 / 冻结问题（附引导）；节点满载 → 换节点重试；frpc 窗口秒退（如杀软拦截）→ 结构化报错 + Agent 给手动命令逃生舱。**R6 边界**：樱花frp 非 AI API，不计 token / 费用；隧道流量为 natfrp 自有计量，MCHA 经 API 取数展示（连接卡片与 `tunnel_status`）。安全：token 仅存 `.env`（0600）并全链路打码（确认门展示 `-f ***:<id>`、`/token` 不回显、导出自动遮蔽）；建删隧道幂等自律；API 定义 AGPL-3.0 仅调用不复制定义。
 
 ### 8.9 故障诊断（定制 4，选做）
 
@@ -670,7 +690,7 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 | mod 元数据               | Modrinth API v2                                                                            | 检索、版本匹配、依赖树、下载 | 免 key，双哈希校验（sha1+sha512）                                              |
 | CurseForge mod 元数据与下载 | CurseForge API v1：官方（`api.curseforge.com`，需 key）+ 国内镜像（`mod.mcimirror.top/curseforge`，免 key） | Modrinth 未收录 mod 的检索与下载（暮色森林等） | 已配 key 走官方，未配置自动走镜像（开源公益项目 mcmod-info-mirror，与官方同构、实测 sha1 一致）；自建 key 池转发与网页抓取裁定排除（§8.12） |
 | JRE 二进制               | Adoptium v3 API（镜像：清华 TUNA）                                                         | Java 自动供给（§8.7）        | sha256 校验                                                                   |
-| 樱花frp API / frpc       | `api.natfrp.com/v4`；frpc 经官方分发（含哈希）                                             | 穿透编排（§8.8）             | 一次性人工：注册 + 实名 + token；API 定义 AGPL-3.0，引用注明                  |
+| 樱花frp API / frpc       | `api.natfrp.com/v4`（OpenAPI 规范 `api.natfrp.com/docs`）；frpc 经官方分发（MD5 哈希，`nya.globalslb.net`） | 穿透编排（§8.8）             | 一次性人工：注册 / 登录 + 实名 + token；API 定义 AGPL-3.0，引用注明                  |
 | 网络搜索 | 可配置后端：默认无；可选 DuckDuckGo HTML 抓取（免 key）或 Serper 等（配 key） | `web_search` 工具 | 国内可达性与反爬脆弱性诚实标注；领域事实主通道是知识库 + 上游 API，搜索是兜底 |
 | LLM                      | 任意 OpenAI 兼容 Chat API（用户配置）                                                      | Agent 大脑                   | R3；无 usage 时记次数（课程 Q9）                                              |
 
@@ -679,14 +699,14 @@ checklist 逐项 pass/fail + 结构化缺项清单：① software × mc_version 
 - 错误分层：模块级 thiserror 枚举 → `AppError`；工具错误结构化回传 Agent（NFR-3）；用户可见错误必须附"下一步怎么办"。
 - **确认门（FR-04）**：按工具 `Permission` 分级——`ReadOnly` 免确认；`Write`（写文件）/ `Execute`（跑命令、起停进程）/ `Network`（下载大文件）默认确认，显示关键内容（命令行、目标路径、写入摘要）后**三选一：y 本次允许 / a 本会话允许此工具 / n 拒绝**（拒绝以结构化错误回传 Agent，由其调整方案）；`[safety] confirm_level = paranoid | standard | auto` 可调（默认 standard；auto 全部免确认，限演示 / CI 并留痕）。
 - **路径收敛**：文件类工具的目标路径必须解析在工作区或数据目录内，越界拒绝（结构化错误回传 Agent）。
-- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`、`api.modrinth.com` / `cdn.modrinth.com`（mod 下载仅此域）、`search.mcmod.cn` / `www.mcmod.cn`、`edge.forgecdn.net` / `mediafilez.forgecdn.net` / `media.forgecdn.net`（CurseForge 下载，§8.12）、`mod.mcimirror.top`（CurseForge API 镜像，仅元数据不下文件，§8.12）；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
+- **下载安全**：HTTPS + 官方域白名单（含镜像域）+ 哈希校验三重；镜像仅替换白名单内域名。白名单域：`piston-meta.mojang.com` / `piston-data.mojang.com`、`bmclapi2.bangbang93.com`、`api.papermc.io`、`meta.fabricmc.net`、`api.adoptium.net`、`mirrors.tuna.tsinghua.edu.cn`、`wiki.biligame.com`、`api.modrinth.com` / `cdn.modrinth.com`（mod 下载仅此域）、`search.mcmod.cn` / `www.mcmod.cn`、`edge.forgecdn.net` / `mediafilez.forgecdn.net` / `media.forgecdn.net`（CurseForge 下载，§8.12）、`mod.mcimirror.top`（CurseForge API 镜像，仅元数据不下文件，§8.12）、`api.natfrp.com`（樱花frp API）与 `nya.globalslb.net`（frpc 下载 CDN，§8.8）；getbukkit 下载域无官方哈希，轨迹明示第三方来源。
 - **进程安全**：子进程统一托管（进程组 / Job Object），Drop 守卫保证取消 / 退出时杀干净，不留孤儿；例外：`start_server` 弹窗启动的服务器进程与 mcha 生命周期**有意解耦**（D134，停服由用户在服务器窗口操作）。
-- 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）。
+- 密钥安全：`.env` / `config.toml` 在 `.gitignore`；导出打码（NFR-2）——已知敏感串（LLM Key / CurseForge Key / 樱花frp token）精确替换 + 密钥样式与公网 IP 规则；确认门展示樱花frp 命令行时 token 呈 `-f ***:<隧道ID>` 形态。
 - 离线模式风险：白名单建议与后果提示写入决策指南（定制 1），Agent 必须向用户明示。
 
 ## 13. 测试与验收策略
 
-- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、Modrinth 客户端（fixture mock）、CurseForge 客户端（GET 检索 fixture mock、官方 / 镜像双基址）与双源降级、依赖闭包黄金用例（含环检测 / 深度上限）、mcmod 搜索页解析（fixture HTML）、Profile save/load 往返、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造（含 status 帧 VarInt 字符串前缀黄金向量与真实抓包形状）、独立窗口 start_server 就绪轮询（无头启动器注入假脚本：旧日志假就绪回归、端口占用守卫、"无新写入"失败区分、停服话术存在性）、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）。
+- 单元：上下文裁剪策略、确认门与路径收敛（含越界负路径）、版本校验管线（含"26.2"拒绝）、MC 版本比较器与 java_compat 区间匹配、别名表检索、Modrinth 客户端（fixture mock）、CurseForge 客户端（GET 检索 fixture mock、官方 / 镜像双基址）与双源降级、依赖闭包黄金用例（含环检测 / 深度上限）、mcmod 搜索页解析（fixture HTML）、Profile save/load 往返、离线 UUID 黄金值（与 Java nameUUIDFromBytes 语义对齐）、server.properties / 启动脚本渲染快照、check_plan 全分支、SLP 包字节构造（含 status 帧 VarInt 字符串前缀黄金向量与真实抓包形状）、独立窗口 start_server 就绪轮询（无头启动器注入假脚本：旧日志假就绪回归、端口占用守卫、"无新写入"失败区分、停服话术存在性）、镜像 URL 重写、JVM 参数推导、Java 供给的版本解析与路径规则、节点打分、wiki 客户端（fixture mock MediaWiki 响应）、natfrp 客户端（fixture mock：/user/info 正常与冻结双形态、/nodes flag 位运算、隧道查重复用、frpc 架构键映射）、隧道名约定与 `-f` 命令打码、樱花frp token 的 setup 步骤与 `/token` 命令（合并写 .env 回归）。
 - **Loop 级集成**：`LlmClient` trait + Fake 实现（脚本化回复与 tool_calls 序列）驱动 Agent Loop 全流程——不花真钱；断言消息流形状、工具调用顺序、停止条件、取消语义。
 - 端到端验收：复用基线实验测例 T1/T3/T4/T5 作验收脚本（同输入、同评分标准），形成"通用 Agent 失败样例 ↔ 本系统通过"一一对应，用于文档与答辩演示。
 - 真实 API 冒烟：`cargo test --ignored` 跑上游连通与一次真实开服。
@@ -703,7 +723,7 @@ src/
 │   ├── general/       # 通用工具：fs / shell / http / search / ask_user / load_skill
 │   └── mod.rs
 ├── mc/                # 开服领域工具后端：sys_info / java / server_jar / files / process /
-│                      #   probe / plan / retrieval（已实现）；mods / tunnel / diag（后续）
+│                      #   probe / plan / retrieval / mods / profile（已实现）；tunnel / diag（后续）
 ├── knowledge/         # 知识库加载、上游 API 客户端、版本校验管线
 ├── store/             # 会话 / 档案 / 用量持久化
 ├── config/            # AppConfig、价格表、确认策略
@@ -719,6 +739,6 @@ src/
   - **服务器设施（已完成）**：知识库（MC 版本比较器 + Java 兼容区间表 + 兼容性查证工具 + Mojang 客户端）→ 环境探测与 Java 探测 → Java 自动供给 → 服务端获取（原版 → Paper → Fabric → Spigot 逐渠道）→ 配置文件生成 → 生命周期工具三件套（D134 起收敛为独立窗口模型二件套） → 端口探测 / SLP ping / 部署前校验 → 检索通道（MC Wiki 后端 + `[retrieval]` 来源注册）→ server-setup 决策指南 + 场景提示词 + 框架小改（场景段注入、技能内置根）+ 假 LLM 客户端端到端集成测试。出口标准：**US1 精简版**——版本 + 账号情况 + 端类型一句话 → 本机 `127.0.0.1:25565` 可登录、全程留痕；Forge 为指导模式；Profile（FR-16）后置。
   - **mod 场景（已完成，细则 §8.12）**：Modrinth 上游客户端（检索 / 项目版本 / 批量重取端点；fixture 单测）→ 中文别名表 + `search_mods` 检索工具 → `resolve_mod` 解析工具（别名解析 → 版本匹配 → 依赖闭包 → 意图清单；黄金用例快照）→ `install_mods` 安装工具（安装期重查 API → 双哈希校验 → 原子落盘 + 进度；冲突分支单测）→ mcmod 检索后端（HTML 解析 + URL 前缀约束）→ Profile 存取（save/load 工具 + `mcha profiles` 子命令）→ 部署前校验 mod 项 + server-setup 决策指南 mod 分支（含 FR-13 推荐规程）+ 提示词 / 工具动词表 + 假 LLM 客户端集成测试。出口标准：**US1 完整版（mod 增量）**——"Fabric 1.21.x，装 JEI 和 Sodium"一句话 → 依赖解析 + 校验下载落 `mods/` + 起服日志确认 mod 载入（`server_status` 可见）+ Profile 保存 / 读回可复现，全程留痕。
   - **mod 双源扩展：CurseForge 通道（当前步，细则 §8.12）**：API 客户端（GET 检索 / 项目文件 / 批量重取；官方 + 国内镜像双基址，key 有无自动选择）→ `resolve_mod` 双源降级（Modrinth 零命中转 CF；别名表 `source` 标注直达）→ `install_mods` 按源分发（CF 下载域白名单 + sha1 校验）→ check_plan 兼容复核扩展到 CF 清单 → setup 向导与启动自检按双通道话术更新 → mock 单测 + 端到端集成测试。出口标准：**暮色森林场景零配置闭环**——"Fabric 1.21.x，装暮色森林和 JEI"在**未配置任何 CurseForge key** 时不须人工介入即完成解析安装（经国内镜像通道）；已配 key 走官方 API。
-  - **内网穿透（规划中）**：`tunnel_*`（§8.8）；故障诊断（选做，§8.9）随后。
+  - **内网穿透（当前步，细则 §8.8，D135–D139）**：natfrp API v4 客户端（user / nodes / node stats / tunnels / system clients；fixture mock 单测）→ 节点打分纯函数（flag 位过滤 + 排序黄金用例）→ `check_tunnel` / `ensure_frpc`（MD5 校验 + 受管目录幂等）→ `create_tunnel`（查重复用）/ `start_tunnel`（独立窗口 + online 轮询 + 端到端验证）/ `tunnel_status` / `delete_tunnel` → setup 向导樱花frp 步骤（注册 / 登录双入口指引）+ `/token` 命令 + 打码扩展 → server-setup 技能网络分支 + 提示词动词表 + FakeLlm 端到端集成测试（mock natfrp + mock 下载 + 假 SLP 服务器）。出口标准：**定制 3 验收**——无公网 IP 环境，人工步骤仅剩注册 / 实名 / 粘贴 token，Agent 在会话中自主完成 frpc 下载 → 选节点 → 建隧道 → 拉起 → TCP + MC SLP 端到端验证 → 连接卡片，外部客户端可连入，同一会话可排障。
 
 每模块完成后独立可编译、可运行（先跑通再美化）。

@@ -243,6 +243,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let tool = RunCommandTool;
         let outcome = tool

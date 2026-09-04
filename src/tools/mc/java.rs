@@ -599,6 +599,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = EnsureJavaTool
             .run(serde_json::json!({ "major": 999 }), &ctx)
@@ -628,6 +629,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = EnsureJavaTool
             .run(serde_json::json!({ "major": 21 }), &ctx)
@@ -658,6 +660,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let installs = scan_installs(&ctx).await;
         // 环境里可能有真实 Java（PATH），但受管目录必为空：只断言不 panic 且元素有 source

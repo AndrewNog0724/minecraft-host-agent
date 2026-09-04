@@ -8,6 +8,7 @@ pub mod curseforge;
 pub mod fabric;
 pub mod modrinth;
 pub mod mojang;
+pub mod natfrp;
 pub mod paper;
 
 use serde::de::DeserializeOwned;

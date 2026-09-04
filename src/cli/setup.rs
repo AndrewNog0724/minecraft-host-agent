@@ -34,6 +34,7 @@ struct ExistingValues {
     model: String,
     api_key: Option<String>,
     curseforge_key: Option<String>,
+    natfrp_token: Option<String>,
 }
 
 /// 读取已有配置（config.toml + 环境变量；不存在时全部为空）。
@@ -52,11 +53,15 @@ fn load_existing() -> ExistingValues {
     let curseforge_key = std::env::var("MCHA_CURSEFORGE_KEY")
         .ok()
         .filter(|v| !v.is_empty());
+    let natfrp_token = std::env::var("MCHA_NATFRP_TOKEN")
+        .ok()
+        .filter(|v| !v.is_empty());
     ExistingValues {
         endpoint,
         model,
         api_key,
         curseforge_key,
+        natfrp_token,
     }
 }
 
@@ -144,11 +149,15 @@ pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
             // 4. 可选：CurseForge API Key（默认跳过；配置时给申请指引）
             let curseforge_key = ask_curseforge_key(existing.curseforge_key.as_deref())?;
 
+            // 5. 可选：樱花frp 访问密钥（默认跳过；注册 / 登录双入口指引，D136）
+            let natfrp_token = ask_natfrp_token(existing.natfrp_token.as_deref())?;
+
             Ok(WizardAnswers {
                 endpoint,
                 model,
                 api_key,
                 curseforge_key,
+                natfrp_token,
             })
         })
         .await
@@ -164,12 +173,17 @@ pub async fn run_setup(data_dir: &std::path::Path) -> anyhow::Result<bool> {
 
     let mut env_updates: BTreeMap<String, Option<String>> = BTreeMap::new();
     env_updates.insert("MCHA_API_KEY".to_string(), Some(answers.api_key.clone()));
-    match &answers.curseforge_key {
-        CfKeyChoice::Keep => {}
-        CfKeyChoice::Set(key) => {
-            env_updates.insert("MCHA_CURSEFORGE_KEY".to_string(), Some(key.clone()));
+    for (env_key, choice) in [
+        ("MCHA_CURSEFORGE_KEY", &answers.curseforge_key),
+        ("MCHA_NATFRP_TOKEN", &answers.natfrp_token),
+    ] {
+        match choice {
+            OptionalKeyChoice::Keep => {}
+            OptionalKeyChoice::Set(value) => {
+                env_updates.insert(env_key.to_string(), Some(value.clone()));
+            }
+            OptionalKeyChoice::Skip => {}
         }
-        CfKeyChoice::Skip => {}
     }
     merge_env_file(&AppConfig::env_path(data_dir), &env_updates)?;
 
@@ -203,11 +217,12 @@ struct WizardAnswers {
     endpoint: String,
     model: String,
     api_key: String,
-    curseforge_key: CfKeyChoice,
+    curseforge_key: OptionalKeyChoice,
+    natfrp_token: OptionalKeyChoice,
 }
 
-/// CurseForge Key 的三种处置。
-enum CfKeyChoice {
+/// 可选密钥的三种处置（CurseForge Key / 樱花frp token 共用）。
+enum OptionalKeyChoice {
     /// 已有值且用户回车保留（不触碰 .env）。
     Keep,
     /// 用户输入了新值。
@@ -235,7 +250,7 @@ fn ask_secret(prompt: &str, existing: Option<&str>) -> anyhow::Result<String> {
 
 /// 可选的 CurseForge Key 步骤：默认跳过；选择配置时给分步申请指引。
 /// 未配置时 CF 通道自动走国内镜像，功能完整可用——此步骤纯粹是官方 API 偏好。
-fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<CfKeyChoice> {
+fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<OptionalKeyChoice> {
     let status = match existing {
         Some(_) => "已设置（回车保留）",
         None => "未配置（CF 自动走国内镜像，功能完整；配置 Key 可改走官方 API）",
@@ -247,8 +262,8 @@ fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<CfKeyChoice> {
         .context("选择被中断")?;
     if !configure {
         return Ok(match existing {
-            Some(_) => CfKeyChoice::Keep,
-            None => CfKeyChoice::Skip,
+            Some(_) => OptionalKeyChoice::Keep,
+            None => OptionalKeyChoice::Skip,
         });
     }
     println!("申请指引（免费，一次性）：");
@@ -265,16 +280,63 @@ fn ask_curseforge_key(existing: Option<&str>) -> anyhow::Result<CfKeyChoice> {
         .context("输入被中断")?;
     if value.is_empty() {
         return Ok(match existing {
-            Some(_) => CfKeyChoice::Keep,
-            None => CfKeyChoice::Skip,
+            Some(_) => OptionalKeyChoice::Keep,
+            None => OptionalKeyChoice::Skip,
         });
     }
-    Ok(CfKeyChoice::Set(value))
+    Ok(OptionalKeyChoice::Set(value))
+}
+
+/// 可选的樱花frp 访问密钥步骤（D136）：默认跳过；注册 / 登录双入口 +
+/// 实名认证 + 密钥获取的分步可点击指引（用户补充：登录入口不可省）。
+fn ask_natfrp_token(existing: Option<&str>) -> anyhow::Result<OptionalKeyChoice> {
+    let status = match existing {
+        Some(_) => "已设置（回车保留）",
+        None => "未配置（朋友跨网络联机需要；仅局域网玩可跳过）",
+    };
+    let configure = dialoguer::Confirm::new()
+        .with_prompt(format!("配置樱花frp 访问密钥？[{status}]"))
+        .default(false)
+        .interact()
+        .context("选择被中断")?;
+    if !configure {
+        return Ok(match existing {
+            Some(_) => OptionalKeyChoice::Keep,
+            None => OptionalKeyChoice::Skip,
+        });
+    }
+    println!("申请指引（免费；已有账号从第 1 步登录即可）：");
+    println!(
+        "  1. 注册账号 {} 或登录已有账号 {}（终端内可 Ctrl+点击）",
+        crate::cli::links::clickable("https://www.natfrp.com/auth/register"),
+        crate::cli::links::clickable("https://www.natfrp.com/auth/login")
+    );
+    println!(
+        "  2. 实名认证（建隧道硬前置，面板内操作）：{}",
+        crate::cli::links::clickable("https://www.natfrp.com/user/")
+    );
+    println!(
+        "  3. 查看/重置访问密钥：{}（截图注意打码，泄露请立即重置）",
+        crate::cli::links::clickable("https://www.natfrp.com/user/profile")
+    );
+    let value = dialoguer::Password::new()
+        .with_prompt("樱花frp 访问密钥（输入不回显；回车返回跳过）")
+        .allow_empty_password(true)
+        .interact()
+        .context("输入被中断")?;
+    if value.is_empty() {
+        return Ok(match existing {
+            Some(_) => OptionalKeyChoice::Keep,
+            None => OptionalKeyChoice::Skip,
+        });
+    }
+    Ok(OptionalKeyChoice::Set(value))
 }
 
 /// 合并写入 .env：仅更新 updates 中出现的键（None = 删除该行），其余行原样
 /// 保留（含注释）；文件不存在时创建。D132：修复旧版整文件覆盖抹掉其他 Key。
-fn merge_env_file(
+/// pub(crate)：`/token` 命令（D136）复用同一合并语义。
+pub(crate) fn merge_env_file(
     path: &std::path::Path,
     updates: &BTreeMap<String, Option<String>>,
 ) -> anyhow::Result<()> {

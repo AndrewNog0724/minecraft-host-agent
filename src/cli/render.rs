@@ -135,6 +135,14 @@ fn tool_verb(name: &str) -> &'static str {
         "install_mods" => "安装 mod",
         "save_profile" => "保存部署档案",
         "load_profile" => "读取部署档案",
+        // 内网穿透（设计 §8.8，D135–D139）
+        "check_tunnel" => "检查穿透账号",
+        "ensure_frpc" => "下载 frpc 客户端",
+        "select_tunnel_node" => "挑选穿透节点",
+        "create_tunnel" => "创建隧道",
+        "start_tunnel" => "启动隧道",
+        "tunnel_status" => "查看隧道状态",
+        "delete_tunnel" => "删除隧道",
         _ => "调用工具",
     }
 }

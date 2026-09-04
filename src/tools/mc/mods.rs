@@ -1316,6 +1316,7 @@ pub(crate) mod tests {
             network,
             retrieval: Default::default(),
             curseforge_key: curseforge_key.to_string(),
+            natfrp_token: String::new(),
         }
     }
 

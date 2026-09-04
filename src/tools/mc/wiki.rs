@@ -416,6 +416,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = WikiSearchTool
             .run(
@@ -448,6 +449,7 @@ mod tests {
             network: Default::default(),
             retrieval,
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = WikiSearchTool
             .run(
@@ -485,6 +487,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let mut last = String::new();
         for _ in 0..2 {

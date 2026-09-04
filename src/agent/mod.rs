@@ -70,6 +70,8 @@ pub struct AgentEnv {
     pub ledger: UsageLedger,
     /// CurseForge API Key（.env 装配时读取；mod 双源用）。
     pub curseforge_key: String,
+    /// 樱花frp 访问密钥（.env 装配或 `/token` 会话内写入后更新；穿透编排用）。
+    pub natfrp_token: String,
 }
 
 /// Agent Loop（无状态方法集；会话状态在 `Session`，框架配置在 `AgentEnv`）。
@@ -312,6 +314,7 @@ impl Agent {
             network: env.config.network.clone(),
             retrieval: env.config.retrieval.clone(),
             curseforge_key: env.curseforge_key.clone(),
+            natfrp_token: env.natfrp_token.clone(),
         };
 
         let _ = events.send(Event::ToolStarted {
@@ -681,6 +684,7 @@ mod tests {
             ledger: UsageLedger::new(guard.path()).unwrap(),
             config,
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         (env, fake, guard)
     }
@@ -1284,5 +1288,116 @@ mod tests {
             assert!(content.contains("集成测试档案"), "{content}");
         }
         let _ = fake;
+    }
+
+    /// 内网穿透端到端（本地 mock natfrp + mock frpc 下载 + 假 SLP 服务器，
+    /// 启动器注入无头 mock）：check_tunnel → ensure_frpc → select_tunnel_node
+    /// → create_tunnel → start_tunnel → tunnel_status → 交付文本。
+    #[tokio::test]
+    async fn tunnel_flow_end_to_end() {
+        // 假 SLP 服务器（start_tunnel 的端到端验证目标；循环 accept——
+        // TCP connect 预检与 SLP ping 是两条连接）
+        let slp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slp_port = slp.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use crate::tools::mc::probe::{framed, read_framed};
+            use tokio::io::AsyncWriteExt;
+            loop {
+                let Ok((mut sock, _)) = slp.accept().await else {
+                    break;
+                };
+                if read_framed(&mut sock).await.is_ok() && read_framed(&mut sock).await.is_ok() {
+                    let status = r#"{"version":{"name":"1.21.1"},"players":{"online":0,"max":10},"description":"MCHA tunnel test"}"#;
+                    let mut payload = Vec::new();
+                    payload.push(status.len() as u8);
+                    payload.extend_from_slice(status.as_bytes());
+                    let _ = sock.write_all(&framed(0x00, &payload)).await;
+                }
+            }
+        });
+
+        let (base, _created) = crate::tools::mc::tunnel::tests::spawn_natfrp_mock(slp_port);
+        let mut config = test_config();
+        config.network.natfrp_api = base;
+        let (mut env, _fake, _guard) = test_env(
+            vec![
+                FakeStep::ToolCalls(vec![(
+                    "check_tunnel".into(),
+                    serde_json::json!({}),
+                )]),
+                FakeStep::ToolCalls(vec![("ensure_frpc".into(), serde_json::json!({}))]),
+                FakeStep::ToolCalls(vec![(
+                    "select_tunnel_node".into(),
+                    serde_json::json!({}),
+                )]),
+                FakeStep::ToolCalls(vec![(
+                    "create_tunnel".into(),
+                    serde_json::json!({ "node_id": 1, "local_port": 25565 }),
+                )]),
+                FakeStep::ToolCalls(vec![(
+                    "start_tunnel".into(),
+                    serde_json::json!({ "tunnel_id": 114515, "ready_timeout_secs": 15 }),
+                )]),
+                FakeStep::ToolCalls(vec![(
+                    "tunnel_status".into(),
+                    serde_json::json!({ "tunnel_id": 114515 }),
+                )]),
+                FakeStep::Text(
+                    "穿透已就绪：朋友用 Java 版多人游戏直接连接节点地址即可；frpc 与服务器窗口都不要关。".into(),
+                ),
+            ],
+            Arc::new(crate::tools::general::tests::QuietInteraction),
+            config,
+        );
+        env.natfrp_token = "good-token".to_string();
+        let sessions = env.data_dir.join("sessions");
+        let mut session = Session::create(&sessions, &env.data_dir).unwrap();
+
+        let (tx, mut rx) = event_channel();
+        let mut allowed = HashSet::new();
+        let end = Agent::run_turn(
+            &env,
+            &mut session,
+            "我们没有公网 IP，帮朋友连进来",
+            &tx,
+            CancelToken::new(),
+            &mut allowed,
+        )
+        .await
+        .unwrap();
+        while rx.try_recv().is_ok() {}
+        assert_eq!(end, TurnEnd::Natural);
+
+        // 消息流：6 次工具回传全部成功
+        let tool_outcomes: Vec<&ToolOutcome> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Tool { outcome, .. } => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_outcomes.len(),
+            6,
+            "应有 check/ensure/select/create/start/status 六次工具结果"
+        );
+        assert!(
+            tool_outcomes.iter().all(|o| o.is_ok()),
+            "全部工具结果应为 Ok：{tool_outcomes:?}"
+        );
+        // start_tunnel 的回传含在线状态与端到端验证
+        if let ToolOutcome::Ok { content } = tool_outcomes[4] {
+            assert!(content.contains("在线"), "{content}");
+            assert!(content.contains("TCP"), "{content}");
+        }
+        // frpc 已落受管目录（MD5 校验通过后落位）
+        let frpc = env
+            .data_dir
+            .join("runtime")
+            .join("frpc")
+            .join("0.51.0-sakura-14")
+            .join(if cfg!(windows) { "frpc.exe" } else { "frpc" });
+        assert!(frpc.is_file(), "frpc 应已落位：{frpc:?}");
     }
 }

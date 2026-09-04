@@ -69,6 +69,8 @@ pub struct ToolCtx {
     pub retrieval: crate::config::RetrievalConfig,
     /// CurseForge API Key（.env 装配时读取；空 = 未配置，mod 覆盖仅 Modrinth）。
     pub curseforge_key: String,
+    /// 樱花frp 访问密钥（.env 装配 / `/token` 写入后同步；空 = 未配置，穿透引导待配置）。
+    pub natfrp_token: String,
 }
 
 /// 确认门请求：展示给用户的内容（完整命令 / 写入摘要 / 下载目标）。

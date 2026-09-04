@@ -34,7 +34,7 @@
 - [x] M2.2.1 mod 双源扩展：CurseForge 通道 + setup 重运行/启动自检（D131/D132，2026-09-03）
 - [x] M2.2.2 CurseForge 国内镜像通道：MCIMirror 双基址（官方 key / 免 key 自动选择）、GET search、暮色森林零配置闭环（D133，2026-09-03）
 - [x] M2.2.3 start_server 独立窗口模型 + mc_ping SLP 修复：弹窗跑 start 脚本、日志不进 Agent 界面、stop_server 移除（停服交用户）、String VarInt 前缀（D134，2026-09-03）
-- [ ] M2.3 内网穿透（tunnel_*，FR-17）
+- [x] M2.3 内网穿透（tunnel_*，FR-17）：樱花frp API v4 七件套（check_tunnel/ensure_frpc/select_tunnel_node/create_tunnel/start_tunnel/tunnel_status/delete_tunnel）、frpc 独立窗口 + MD5 校验、setup 可选步骤（注册/登录双入口）+ /token 命令（D135–D139，2026-09-04）
 - [ ] P1：日志诊断（FR-18 选做）
 - [ ] 提交版设计文档定稿
 - [ ] README 补全配置与演示章节

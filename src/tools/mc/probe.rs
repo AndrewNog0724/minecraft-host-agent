@@ -256,7 +256,7 @@ impl Tool for McPingTool {
 }
 
 /// 执行完整 SLP 流程：连接 → 握手 → status 请求 → 解析 JSON。
-async fn ping(addr: &str, host: &str, port: u16) -> Result<String, String> {
+pub(crate) async fn ping(addr: &str, host: &str, port: u16) -> Result<String, String> {
     let mut stream = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|err| format!("连接 {addr} 失败：{err}"))?;
@@ -392,6 +392,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         // 占一个随机空闲端口，bind 模式应报占用
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -426,6 +427,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = ProbePortTool
             .run(serde_json::json!({ "mode": "nope", "port": 25565 }), &ctx)
@@ -466,6 +468,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         let outcome = McPingTool
             .run(serde_json::json!({ "port": port }), &ctx)

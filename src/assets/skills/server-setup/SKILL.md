@@ -154,3 +154,51 @@ probe_port(mode=connect) / mc_ping  # 连通验证
 - 意图清单必须**原样**传给 `install_mods`；下载 URL 与哈希由安装时实时重取
   Modrinth 得到，不要在清单里手写或修改。
 - mod 装完必须提示"重启服务器后生效"。
+
+## 11. 内网穿透（樱花frp，跨网络·无公网IP 分支）
+
+适用：`ask_user` 网络拓扑得到「跨网络·无公网IP」。一次性人工步骤只有注册 /
+实名 / 粘贴密钥；其余全部由你编排。有公网 IP 时不走本节，给端口映射 + 防火
+墙指引即可。
+
+### 11.1 编排序（每步失败即按错误文本处理，见 §7）
+
+```text
+check_tunnel()                     # 账号快照：密钥 / 实名 / 等级 / 流量 / frpc 在位
+  └─ 未配置密钥 → 引导 /token 或 mcha setup（错误文本含分步入口，如实转述）
+  └─ 未实名 → 阻塞指引（面板内操作），完成后重新 check_tunnel
+ensure_frpc()                      # 官方 frpc 下载 + MD5 校验（同版本幂等跳过）
+select_tunnel_node(limit=5)        # 确定性打分：内地优先 → 负载低 → 非 BETA
+ask_user 选节点（默认推荐第一位）   # 用户保留控制权，不擅自替用户挑
+create_tunnel(node_id, local_port) # 同名同端口自动复用；返回公网端点
+start_server（若服务器未起）        # 先起服再验隧道
+start_tunnel(tunnel_id)            # 独立窗口拉 frpc → 轮询在线 → TCP + MC ping 端到端验证
+```
+
+### 11.2 交付卡片（部署成功后必须输出）
+
+- 朋友连接地址：`<节点host>:<远程端口>`（Java 版 multiplayer 直接填）。
+- 流量余额与限速（check_tunnel 返回值），提示：隧道流量按樱花frp 计量。
+- 注意事项：**frpc 窗口与服务器窗口都不能关**（关了朋友就断）；mcha 退出不
+  影响两者；隧道离线时说一声即可，Agent 会用 `start_tunnel` 重新拉起。
+- 建议 `save_profile` 记录 `network=Tunnel{provider, endpoint}`，下次复用。
+
+### 11.3 排障（"朋友连不上了"）
+
+第一步永远 `tunnel_status`，按快照定位：
+
+| 现象 | 结论 | 动作 |
+| --- | --- | --- |
+| 隧道离线 | frpc 窗口被关 | `start_tunnel` 重新拉起 |
+| 隧道在线、本地端口无监听 | 服务器窗口被关 | 重新 `start_server` |
+| 全链路通但朋友连不上 | 朋友侧网络 / 客户端问题 | 让朋友检查版本与地址 |
+
+### 11.4 红线
+
+- 访问密钥**永不回显、永不写入会话**：引导用户用 `/token`（隐藏输入）或
+  `mcha setup` 配置；工具回传与确认门里的密钥都是 `***` 形态，不要索要明文。
+- `create_tunnel` / `start_tunnel` / `delete_tunnel` 都有确认门（公网暴露类
+  操作），被拒绝时不要重复请求，先问清用户顾虑。
+- 同名隧道（`mcha-mc<端口>`）已存在时工具自动复用，**不要**引导用户重复创建；
+  换节点需先 `delete_tunnel`（强确认）再重建。
+- 账号被冻结 / 未实名 / 等级不足时如实转述工具的结构化错误，不要反复重试。

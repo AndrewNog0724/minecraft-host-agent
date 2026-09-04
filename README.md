@@ -24,6 +24,26 @@
 - **R5 历史管理**：会话 = 完整消息流 JSONL 逐条落盘；`sessions list/show/export`（导出自动打码密钥与公网 IP）；`--continue` / `--resume`
 - **R6 用量统计**：每次调用（含重试与失败）强制记账，按价格表换算费用；预算硬上限超限自动中断；`usage` 全局账本
 
+### M2 已实现（开服场景包）
+
+- **服务器设施**：版本兼容查证、Java 受管自动安装、四渠道服务端下载（原版 / Paper / Spigot / Fabric，哈希校验）、配置生成（EULA / properties / 离线白名单 UUID / 启动脚本）、独立窗口启动与就绪检测、端口探测与 MC 协议 ping、部署前确定性校验 `check_plan`
+- **mod 场景**：`search_mods` / `resolve_mod` / `install_mods` 三段式（中文别名表、依赖闭包、Modrinth + CurseForge 双源——未配置 Key 自动走国内镜像，暮色森林等 CF 独占 mod 零配置可装）
+- **部署档案**：`save_profile` / `load_profile`（方案快照与产物清单，跨会话复用）
+- **内网穿透（樱花frp）**：一次性人工步骤只剩**注册 / 登录、实名、粘贴访问密钥**；之后 Agent 全自动编排——
+
+  ```text
+  > 我们没有公网 IP，朋友要能连进来
+  ⏺ check_tunnel      账号快照（实名 / 等级 / 流量 / frpc 在位；未配置密钥时给 /token 引导）
+  ⏺ ensure_frpc       官方 frpc 下载 + MD5 校验（同版本幂等跳过）
+  ⏺ select_tunnel_node 确定性打分（内地优先 → 负载低 → 非 BETA）
+  ⏺ ask_user          你确认节点（默认推荐第一位）
+  ⏺ create_tunnel     建隧道（同名同端口自动复用）
+  ⏺ start_tunnel      独立窗口启动 frpc → 轮询在线 → TCP + MC ping 端到端验证
+  → 连接说明卡片：朋友连接地址、流量余额、注意事项
+  ```
+
+  密钥配置两条路：`mcha setup` 可选步骤（含注册与登录入口、实名认证、密钥获取的分步可点击指引）或会话内 `/token`（隐藏输入，密钥不经过模型）。隧道流量由樱花frp 计量，MCHA 只展示不计费。
+
 作业背景与完整要求见 [`docs/`](./docs)：
 
 | 文档                                                         | 内容                                                  |
@@ -44,7 +64,7 @@
 - [x] **R5 上下文历史管理**：完整消息流 JSONL 落盘，可查看 / 恢复 / 导出（自动打码）
 - [x] **R6 Token 用量与价格统计**：逐调用计量与费用换算、预算上限超限自动中断、三层展示（退出汇总 / `usage` 账本 / `sessions show` 明细）
 
-> M2 开服场景包（领域工具 / 知识库 / Skills / 场景提示词）待实现，对应"场景定制"能力的落地。
+> M2 开服场景包（领域工具 / 知识库 / Skills / 场景提示词）已分步交付：服务器设施（M2.1）→ mod 场景与 CurseForge 双源（M2.2）→ 内网穿透（M2.3，见下文"开服场景能力"）。
 
 ## 环境要求
 
@@ -108,6 +128,7 @@ $ mcha
 | 直接输入中文 | 给 Agent 下任务，它会自主多步执行 |
 | `Ctrl-C` | 打断当前回合（工具执行中也可以），会话保留 |
 | `/usage` | 看本会话累计 token 与费用 |
+| `/token` | 配置樱花frp 访问密钥（朋友跨网络联机用，隐藏输入） |
 | `/exit` 或 `Ctrl-D` | 退出并打印费用汇总与轨迹文件路径 |
 | `mcha --continue` | 下次接着上次会话继续聊 |
 
@@ -164,7 +185,8 @@ cargo clippy --all-targets -- -D warnings
 
 - **数据目录**：`~/.mcha/`（Windows `%APPDATA%\mcha\`；可用 `MCHA_DATA` 覆盖）。布局：`config.toml`（配置）、`.env`（仅 API Key，权限 600）、`sessions/`（会话轨迹）、`usage/`（用量账本）、`runtime/`（运行时附件）。
 - **工作区**：文件与命令工具的作用范围，默认当前目录，可用 `MCHA_WORKSPACE` 覆盖。
-- **API Key**：写在 `~/.mcha/.env` 的 `MCHA_API_KEY=...`（变量名可经 `model.api_key_env` 更改），永不写入 config.toml 与仓库。
+- **API Key**：写在 `~/.mcha/.env` 的 `MCHA_API_KEY=...`（变量名可经 `model.api_key_env` 更改），永不写入 config.toml 与仓库。可选 Key：`MCHA_CURSEFORGE_KEY`（CurseForge 官方 API，未配置自动走国内镜像）、`MCHA_NATFRP_TOKEN`（樱花frp 访问密钥，内网穿透用；`mcha setup` 或会话内 `/token` 配置）。
+- **受管运行时**：`runtime/` 下按版本存放自动下载的 JRE（`runtime/jdk-<major>/`）与 frpc（`runtime/frpc/<版本>/`，含启动脚本 frpc-start，访问密钥固化在脚本内），删除对应目录即卸载。
 - **config.toml 全景**（首次 setup 自动生成，含注释）：
 
   ```toml
@@ -199,7 +221,8 @@ cargo clippy --all-targets -- -D warnings
 ## 演示用例
 
 - **M1 通用任务**（设计 §14 出口标准）：对 Agent 说"抓取某页面存为文件并统计行数"一类多步实事——它会依次调用 `http_get_text` → `write_file` → `run_command`，全程工具调用留痕（`sessions show` 可回放）、可 Ctrl-C 打断、退出时显示 token 与费用汇总。
-- **M2 开服场景**：待场景包交付后补充（对应基线实验 T1–T5 的对照演示）。
+- **M2.1/M2.2 开服 + mod**（基线实验 T4 对照）：对 Agent 说"我们 5 个人，2 个正版 3 个离线，Fabric 1.21.1，装暮色森林和 JEI"——查证版本 → 自动装 Java → 下载 Fabric 服务端 → 生成配置 → 解析安装 mod（暮色森林经 CurseForge 镜像通道，零配置）→ 起服 → `mc_ping` 验证 → 交付连接说明。
+- **M2.3 内网穿透**：在同一会话继续说"我们没有公网 IP，朋友要能连进来"——`check_tunnel`（未配置密钥则引导 `/token`）→ 下载 frpc → 打分选节点（你确认）→ 建隧道 → 独立窗口启动 frpc → TCP + MC ping 端到端验证 → 朋友用公网地址直连；之后"朋友连不上了"会走 `tunnel_status` 排障。
 
 ## 项目结构
 
@@ -221,12 +244,14 @@ cargo clippy --all-targets -- -D warnings
 └── README.md
 ```
 
-## 已知边界（M1）
+## 已知边界
 
 - 符号链接不做解析（路径收敛为词法规范化，目标平台 Windows 上风险低）
 - `run_command` 超时 / 取消时终止直接子进程，不追杀整个进程树
 - `web_search` 仅接口就绪，未内置搜索后端（决议 D103：默认如实告知）
 - 思考模式（thinking）按 GLM 系 OpenAI 兼容语义发送；思考全文不入史，仅留"已思考 Ns"占位
+- Forge 自动安装为指导模式；日志诊断（FR-18）为选做项，尚未交付
+- 内网穿透：frpc 与服务器一样运行在独立窗口，**关闭窗口即断开隧道**；樱花frp 建隧道依赖其平台的实名认证与账号等级，节点可用性以平台实时状态为准
 
 ## 开发时间线
 

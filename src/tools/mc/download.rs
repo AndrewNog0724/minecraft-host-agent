@@ -18,6 +18,8 @@ pub(crate) enum ExpectedHash {
     Sha1(String),
     Sha256(String),
     Sha512(String),
+    /// SakuraFrp frpc 官方分发为 MD5（D135 事实基线）。
+    Md5(String),
 }
 
 /// 下载结果：字节数 + sha256（落地计算留痕）+ sha1（需要时计算）。
@@ -92,6 +94,10 @@ pub(crate) async fn download_verified(
         .iter()
         .any(|k| matches!(k, ExpectedHash::Sha512(_)))
         .then(sha2::Sha512::new);
+    let mut hasher_md5 = expected
+        .iter()
+        .any(|k| matches!(k, ExpectedHash::Md5(_)))
+        .then(md5::Md5::new);
     let mut written: u64 = 0;
     let mut last_progress = Instant::now();
     let mut stream = std::pin::pin!(response.bytes_stream());
@@ -109,6 +115,9 @@ pub(crate) async fn download_verified(
             hasher.update(&chunk);
         }
         if let Some(hasher) = hasher512.as_mut() {
+            hasher.update(&chunk);
+        }
+        if let Some(hasher) = hasher_md5.as_mut() {
             hasher.update(&chunk);
         }
         file.write_all(&chunk)
@@ -132,7 +141,7 @@ pub(crate) async fn download_verified(
     let sha256 = hex(&hasher256.finalize());
     let sha1 = hasher1.map(|h| hex(&h.finalize()));
     let sha512 = hasher512.map(|h| hex(&h.finalize()));
-    let _ = &sha512;
+    let md5_hex = hasher_md5.map(|h| hex(&h.finalize()));
 
     for kind in expected {
         match kind {
@@ -154,6 +163,13 @@ pub(crate) async fn download_verified(
                 let actual = sha512.clone().unwrap_or_default();
                 return Err(format!(
                     "sha512 校验失败：期望 {want}，实际 {actual}（文件已删除）"
+                ));
+            }
+            ExpectedHash::Md5(want) if md5_hex.as_deref() != Some(want.as_str()) => {
+                let _ = std::fs::remove_file(dest);
+                let actual = md5_hex.clone().unwrap_or_default();
+                return Err(format!(
+                    "MD5 校验失败：期望 {want}，实际 {actual}（文件已删除）"
                 ));
             }
             _ => {}

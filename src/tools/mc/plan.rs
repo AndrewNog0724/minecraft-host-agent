@@ -526,6 +526,7 @@ mod tests {
             network: Default::default(),
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         };
         (ctx, root)
     }
@@ -698,6 +699,7 @@ mod tests {
             network,
             retrieval: Default::default(),
             curseforge_key: String::new(),
+            natfrp_token: String::new(),
         }
     }
 

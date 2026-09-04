@@ -122,6 +122,9 @@ pub struct NetworkConfig {
     /// CurseForge API 基址；空 = 官方 `https://api.curseforge.com`（同上钩子）。
     #[serde(default)]
     pub curseforge_api: String,
+    /// 樱花frp API 基址；空 = 官方 `https://api.natfrp.com/v4`（测试注入 mock 同上）。
+    #[serde(default)]
+    pub natfrp_api: String,
 }
 
 impl Default for NetworkConfig {
@@ -131,6 +134,7 @@ impl Default for NetworkConfig {
             adoptium_mirror: "tuna".to_string(),
             modrinth_api: String::new(),
             curseforge_api: String::new(),
+            natfrp_api: String::new(),
         }
     }
 }
@@ -357,6 +361,7 @@ confirm_level = "standard"  # paranoid | standard | auto
 mojang_mirror = "bmclapi"   # bmclapi | off | 自定义基础URL
 adoptium_mirror = "tuna"    # tuna | off
 # modrinth_api = ""         # Modrinth API 基址；空 = 官方（测试/自建代理用）
+# natfrp_api = ""           # 樱花frp API 基址；空 = 官方 https://api.natfrp.com/v4
 
 [retrieval]                 # wiki 检索来源注册（决议 D120）
 mcwiki = "https://wiki.biligame.com/mc/api.php"

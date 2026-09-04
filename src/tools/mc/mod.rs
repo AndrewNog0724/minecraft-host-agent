@@ -15,6 +15,7 @@ pub mod process;
 pub mod profile;
 pub mod server_jar;
 pub mod sys_info;
+pub mod tunnel;
 pub mod wiki;
 
 use super::ToolRegistry;
@@ -45,4 +46,12 @@ pub fn register_mc_tools(registry: &mut ToolRegistry) {
     // 部署档案（FR-16 / US3）
     registry.register(Box::new(profile::SaveProfileTool));
     registry.register(Box::new(profile::LoadProfileTool));
+    // 内网穿透编排（FR-17 / 定制 3，设计 §8.8）：七件套
+    registry.register(Box::new(tunnel::CheckTunnelTool));
+    registry.register(Box::new(tunnel::EnsureFrpcTool));
+    registry.register(Box::new(tunnel::SelectTunnelNodeTool));
+    registry.register(Box::new(tunnel::CreateTunnelTool));
+    registry.register(Box::new(tunnel::start_tunnel_tool()));
+    registry.register(Box::new(tunnel::TunnelStatusTool));
+    registry.register(Box::new(tunnel::DeleteTunnelTool));
 }

@@ -82,8 +82,9 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
         interaction: interaction.clone(),
         ledger,
         config,
-        // CurseForge Key：.env 在 main 启动时已加载进环境，此处读取一次
+        // CurseForge Key / 樱花frp token：.env 在 main 启动时已加载进环境，此处各读取一次
         curseforge_key: std::env::var("MCHA_CURSEFORGE_KEY").unwrap_or_default(),
+        natfrp_token: std::env::var("MCHA_NATFRP_TOKEN").unwrap_or_default(),
     };
     env.system_prompt = crate::agent::default_system_prompt(&env);
 
@@ -182,10 +183,18 @@ pub async fn run(mode: ReplMode) -> anyhow::Result<()> {
                 }
                 "help" => print_help(),
                 "sessions" => super::commands::sessions_list(&data_dir)?,
+                "token" => match configure_natfrp_token(&data_dir, &mut env).await {
+                    Ok(masked) => println!(
+                        "{}",
+                        format!("✓ 樱花frp 访问密钥已配置（{masked}），穿透编排可用了。")
+                            .with(Color::Green)
+                    ),
+                    Err(err) => println!("{}", format!("配置失败：{err}").with(Color::Red)),
+                },
                 other => {
                     println!(
                         "{}",
-                        format!("未知命令 /{other}；可用：/exit /usage /help /sessions")
+                        format!("未知命令 /{other}；可用：/exit /usage /help /sessions /token")
                             .with(Color::Yellow)
                     );
                 }
@@ -241,6 +250,43 @@ async fn run_turn(
         );
     }
     Ok(())
+}
+
+/// `/token`（D136）：会话内补配樱花frp 访问密钥——隐藏输入、合并写 .env、
+/// 同步 AgentEnv（工具上下文随 dispatch 重建，即刻生效）。密钥不回显、
+/// 不经过 LLM 上下文；回显只展示尾 4 位。
+async fn configure_natfrp_token(
+    data_dir: &std::path::Path,
+    env: &mut AgentEnv,
+) -> anyhow::Result<String> {
+    println!(
+        "申请入口：注册 {} 或登录 {}；实名认证 {}；密钥查看 {}（终端内可 Ctrl+点击）",
+        crate::cli::links::clickable("https://www.natfrp.com/auth/register"),
+        crate::cli::links::clickable("https://www.natfrp.com/auth/login"),
+        crate::cli::links::clickable("https://www.natfrp.com/user/"),
+        crate::cli::links::clickable("https://www.natfrp.com/user/profile")
+    );
+    let value = tokio::task::spawn_blocking(|| {
+        dialoguer::Password::new()
+            .with_prompt("樱花frp 访问密钥（输入不回显；回车取消）")
+            .allow_empty_password(true)
+            .interact()
+    })
+    .await
+    .context("输入线程异常")??;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        anyhow::bail!("未输入密钥，保持原状态");
+    }
+    let mut updates = std::collections::BTreeMap::new();
+    updates.insert("MCHA_NATFRP_TOKEN".to_string(), Some(value.clone()));
+    setup::merge_env_file(&AppConfig::env_path(data_dir), &updates)?;
+    env.natfrp_token = value.clone();
+    let tail: String = value.chars().rev().take(4).collect();
+    Ok(format!(
+        "尾 4 位 ****{}",
+        tail.chars().rev().collect::<String>()
+    ))
 }
 
 async fn read_line() -> anyhow::Result<Option<String>> {
@@ -322,6 +368,7 @@ fn print_help() {
     println!("/exit    退出会话（Ctrl-D 同效；提示符处 Ctrl-C 亦可）");
     println!("/usage   显示本会话累计用量与费用");
     println!("/sessions 列出历史会话");
+    println!("/token   配置樱花frp 访问密钥（朋友跨网络联机用，隐藏输入）");
     println!("/help    显示本帮助");
     println!("提示：回合执行中按 Ctrl-C 可打断当前操作（会话保留）。");
 }
