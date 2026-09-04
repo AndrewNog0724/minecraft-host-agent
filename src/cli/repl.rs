@@ -321,6 +321,13 @@ fn print_startup_hints(env: &AgentEnv) {
                 .to_string(),
         );
     }
+    if env.natfrp_token.trim().is_empty() {
+        hints.push(
+            "未配置樱花frp 访问密钥：本机联机不受影响；需要朋友跨网络加入时，\
+             会话内 /token 或 mcha setup 配置（含注册/登录/实名分步指引）"
+                .to_string(),
+        );
+    }
     if hints.is_empty() {
         return;
     }

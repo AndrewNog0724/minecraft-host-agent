@@ -388,7 +388,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
   - **存储**：`~/.mcha/config.toml`（除 Key 外的一切）+ `~/.mcha/.env`（各类 Key：`MCHA_API_KEY` 为 LLM Key，可用 `model.api_key_env` 改名；`MCHA_CURSEFORGE_KEY` 为 CurseForge API Key，可选；`MCHA_NATFRP_TOKEN` 为樱花frp 访问密钥，可选）；Key 永不写入 config.toml 与仓库。
   - **首次启动向导**：`mcha` 检测到无配置时自动进入 `setup`——必填仅 3 项（endpoint / 模型名 / API Key，endpoint 提供智谱 GLM、DeepSeek 等预设快捷项），其余全部有默认值归入"高级选项"回车即过；完成后自动执行一次**连接测试**（发最小对话请求，显示延迟与模型应答）再进入会话，配置错误在第一步就被发现。**向导可重复运行**：`mcha setup` 读取已有配置作为默认值（回车保留当前值），检测到已有 Key 时显示"已设置，回车保留"；`.env` 采用**合并写入**（只更新被修改的项，其余 Key 原样保留）。**可选步骤**：向导尾部提供 CurseForge API Key 配置（默认跳过；未配置时 CF 通道自动使用国内镜像，功能完整可用；选择配置时给出分步申请指引）与樱花frp 访问密钥配置（默认跳过；含**注册与登录两个入口** + 实名认证 + 密钥获取的分步可点击指引）。
   - **REPL `/token` 命令**：会话进行中补配樱花frp 访问密钥——隐藏输入、合并写 `.env`、同步进程环境与工具上下文；密钥不回显、不经过 LLM 上下文（D136）。
-  - **启动自检（非阻断）**：交互会话启动时一次性检查可选项配置状态，对未配置项给出一条紧凑提示（如 CurseForge Key 缺失 → "CF 走国内镜像通道，如需官方 API 可运行 mcha setup 配置 Key"）；不强制、不重复提醒、全部就绪时不输出额外内容。
+  - **启动自检（非阻断）**：交互会话启动时一次性检查可选项配置状态，对未配置项给出一条紧凑提示（CurseForge Key 缺失 → "CF 走国内镜像通道，如需官方 API 可运行 mcha setup 配置 Key"；搜索后端缺失 → "web_search 不可用，领域事实走知识库 + 上游 API"；樱花frp 密钥缺失 → "本机联机不受影响；朋友跨网络加入需 /token 或 mcha setup"，D140）；不强制、不重复提醒、全部就绪时不输出额外内容。
   - **可点击链接**：向导等用户直出文本中的网址按终端能力渲染——支持 OSC 8 的终端（Windows Terminal / iTerm2 / VTE 系 / mintty 等，白名单检测）输出显式超链接，其余回退纯文本 URL（现代终端自动识别）；`MCHA_NO_HYPERLINK=1` 强制关闭（与 `MCHA_ASCII` 同一降级约定）。工具回传 Agent 的文本内保持纯 URL，不夹带转义序列。
   - **配置文件全景**：
 
@@ -500,7 +500,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 **用户使用流程（三阶段）**
 
 1. **阶段 0·一次性配置（`mcha setup` 可选步骤，D136）**：向导在 CurseForge Key 步骤后新增"樱花frp 访问密钥"——状态行（未配置提示"朋友跨网络联机需要；仅局域网可跳过"/ 已设置回车保留）→ 申请指引（**注册与登录两个入口** + 实名认证 + 密钥获取页，可点击链接、OSC 8 降级）→ Password 隐藏输入 → `.env` 写 `MCHA_NATFRP_TOKEN`（`merge_env_file` 合并写入）。
-2. **阶段 1·会话内全自动编排（US1 网络分支增量）**：`ask_user` 网络拓扑 → 无公网 IP → `check_tunnel`（未配置 token → 引导 `/token` 或 `mcha setup`，密钥不经过 LLM 上下文；未实名 → 阻塞指引）→ `ensure_frpc` → `select_tunnel_node` → `ask_user` 确认节点（默认推荐第一位，D138）→ `create_tunnel` → 提示起服（若未起）→ `start_tunnel` → **连接说明卡片**（地址 `node_host:remote_port`、朋友怎么连、流量余额、限速、注意事项——Markdown 静态块）→ `save_profile` 落 `network=Tunnel{provider, endpoint}`。
+2. **阶段 1·会话内全自动编排（US1 网络分支增量）**：开服类任务开工前先感知工作区现状（D141：`list_dir` 工作区与 `~/.mcha/profiles/`、必要时 `mc_ping` 本地端口；发现已有部署先确认沿用 / 继续 / 新开，不得默认新开）→ `ask_user` 网络拓扑 → 无公网 IP → `check_tunnel`（未配置 token → 引导 `/token` 或 `mcha setup`，密钥不经过 LLM 上下文；未实名 → 阻塞指引）→ `ensure_frpc` → `select_tunnel_node` → `ask_user` 确认节点（默认推荐第一位，D138）→ `create_tunnel` → 提示起服（若未起）→ `start_tunnel` → **连接说明卡片**（地址 `node_host:remote_port`、朋友怎么连、流量余额、限速、注意事项——Markdown 静态块）→ `save_profile` 落 `network=Tunnel{provider, endpoint}`。
 3. **阶段 2·同一会话排障（US2）**："朋友连不上了" → `tunnel_status` → 按快照定位（隧道不在线 → frpc 窗口被关，重新 `start_tunnel`；本地端口不通 → 服务器窗口问题走诊断；TCP 通 SLP 不通 → 服务器未就绪）→ 修复动作。
 
 **生命周期与失败模式**：frpc 与服务器窗口同为独立进程、与 mcha 生命周期解耦（停机顺序由用户决定）；`online=true` 但非本机拉起（用户在别处用启动器连了同一隧道）时如实提示重复。失败映射：API 401 → token 无效；403 → 实名 / 等级 / 冻结问题（附引导）；节点满载 → 换节点重试；frpc 窗口秒退（如杀软拦截）→ 结构化报错 + Agent 给手动命令逃生舱。**R6 边界**：樱花frp 非 AI API，不计 token / 费用；隧道流量为 natfrp 自有计量，MCHA 经 API 取数展示（连接卡片与 `tunnel_status`）。安全：token 仅存 `.env`（0600）并全链路打码（确认门展示 `-f ***:<id>`、`/token` 不回显、导出自动遮蔽）；建删隧道幂等自律；API 定义 AGPL-3.0 仅调用不复制定义。

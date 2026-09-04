@@ -149,6 +149,19 @@ $ mcha
 
 ## 构建与运行
 
+**环境引导脚本（推荐给没装过 Rust 的机器）**：一键搭好 rustup 工具链（Windows 还会自动装 MSVC Build Tools）并编译安装 `mcha`，每步先检测后安装、可重复执行——
+
+```powershell
+# Windows（PowerShell，无需管理员）
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap-windows.ps1
+```
+
+```bash
+# Linux / macOS
+bash scripts/bootstrap.sh
+```
+
+已装 Rust 的机器可直接手动构建：
 ```bash
 # 构建
 cargo build --release

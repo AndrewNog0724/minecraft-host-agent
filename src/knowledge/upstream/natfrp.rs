@@ -709,12 +709,16 @@ mod tests {
         let release = client.frpc_release().await.unwrap();
         assert_eq!(release.ver, "0.51.0-sakura-14");
         assert!(release.archs.contains_key(&frpc_arch_key()));
-        let download = release.archs.values().next().unwrap();
-        assert_eq!(
-            download.hash.len(),
-            32,
-            "frpc 哈希应为 MD5（32 位十六进制）"
-        );
+        // archs 混有 docker 类无哈希条目（真实 API 形态）：要么 32 位 MD5，
+        // 要么空串（不可直接下载，downloadable() 须拒绝）
+        for (key, download) in &release.archs {
+            assert!(
+                download.hash.len() == 32 || download.hash.is_empty(),
+                "{key} 哈希既非 MD5 也非空：{:?}",
+                download.hash
+            );
+            assert_eq!(download.downloadable(), download.hash.len() == 32);
+        }
     }
 
     #[tokio::test]
