@@ -688,16 +688,24 @@ type Launcher = Arc<dyn Fn(&Path, &Path) -> Result<(), String> + Send + Sync>;
 fn real_launch(dir: &Path, script: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        use std::process::Stdio;
         let _ = dir;
+        // 与 process.rs 的 start_server 同一修法：不走 CREATE_NEW_CONSOLE +
+        // 句柄继承（弹窗 stdin 会指向 mcha 的输入缓冲区，两边抢键），改走
+        // `start` 内建给新控制台干净的句柄；/k 保窗，frpc 退出后可读回显。
         std::process::Command::new("cmd")
             .args([
+                "/c",
+                "start",
+                "MCHA frpc",
+                "cmd",
                 "/k",
                 &script.file_name().unwrap_or_default().to_string_lossy(),
             ])
             .current_dir(dir)
-            .creation_flags(CREATE_NEW_CONSOLE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map(|_| ())
             .map_err(|err| format!("新开窗口启动 frpc 失败：{err}"))

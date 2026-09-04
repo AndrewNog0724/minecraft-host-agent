@@ -80,13 +80,18 @@ type Launcher = Arc<dyn Fn(&Path, &Path) -> Result<(), String> + Send + Sync>;
 fn real_launch(server_dir: &Path, script: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        use std::process::Stdio;
         let _ = script; // bat 固定从服务器目录启动，无需脚本路径
+        // 不能用 CREATE_NEW_CONSOLE + 默认句柄继承的组合：那样弹窗 cmd 的
+        // stdin 仍指向 mcha 控制台的输入缓冲区，两边抢键、弹窗窗口自身输入
+        // 无响应。改走 `start` 内建——它创建新控制台时不传继承句柄，弹窗
+        // 拿到自己的输入缓冲区；外层瞬态 cmd 三路 stdio 置空杜绝继承。
         std::process::Command::new("cmd")
-            .args(["/c", "start.bat"])
+            .args(["/c", "start", "MCHA Server", "start.bat"])
             .current_dir(server_dir)
-            .creation_flags(CREATE_NEW_CONSOLE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map(|_| ())
             .map_err(|err| format!("新开窗口启动 start.bat 失败：{err}"))
