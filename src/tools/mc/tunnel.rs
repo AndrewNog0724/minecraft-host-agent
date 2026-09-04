@@ -58,10 +58,10 @@ fn token_missing() -> ToolOutcome {
         "未配置樱花frp 访问密钥。请引导用户完成一次性配置（任选其一）：\n\
          1. 会话内直接输入 /token 命令补配（推荐，不用退出会话）；\n\
          2. 或退出后运行 mcha setup（可选步骤）。\n\
-         申请入口：注册 https://www.natfrp.com/auth/register 或登录 \
-         https://www.natfrp.com/auth/login；实名认证在管理面板 \
-         https://www.natfrp.com/user/ 完成（建隧道硬前置）；访问密钥在 \
-         https://www.natfrp.com/user/profile 查看复制。\n\
+         申请入口：打开 https://www.natfrp.com/（注册 / 登录入口在首页\
+         右上角）；实名认证在管理面板 https://www.natfrp.com/user/ 完成\
+         （建隧道硬前置）；访问密钥在 https://www.natfrp.com/user/profile \
+         查看复制。\n\
          配置完成后重新调用本工具继续编排。",
     )
 }
@@ -1467,7 +1467,10 @@ pub(crate) mod tests {
             panic!("应结构化报错");
         };
         assert!(error.contains("/token"), "{error}");
-        assert!(error.contains("auth/login"), "{error}");
+        // 勘误（D143）：注册 / 登录深链已失效，统一引导到首页
+        assert!(error.contains("https://www.natfrp.com/"), "{error}");
+        assert!(!error.contains("auth/register"), "{error}");
+        assert!(!error.contains("auth/login"), "{error}");
     }
 
     #[tokio::test]

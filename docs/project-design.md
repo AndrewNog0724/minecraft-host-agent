@@ -474,7 +474,7 @@ enum Permission { ReadOnly, Write, Execute, Network }   // 确认策略见 §12
 
 ### 8.8 内网穿透编排（`tunnel_*` 后端，FR-17 / 定制 3）
 
-**一次性人工步骤**：注册（`www.natfrp.com/auth/register`）或登录已有账号（`/auth/login`）→ 实名认证（管理面板 `www.natfrp.com/user/` 内完成，建隧道硬前置）→ 复制访问密钥（`/user/profile`）→ 粘贴配置。注册与实名涉及合规与隐私，不做自动化；密钥入口见下（setup 向导可选步骤 + `/token` 命令，D136）。token 就绪后的全自动编排（工具后端实现规格，D135/D137）：
+**一次性人工步骤**：注册 / 登录（入口统一在首页 `www.natfrp.com` 右上角；深链勘误 D143）→ 实名认证（管理面板 `www.natfrp.com/user/` 内完成，建隧道硬前置）→ 复制访问密钥（`/user/profile`）→ 粘贴配置。注册与实名涉及合规与隐私，不做自动化；密钥入口见下（setup 向导可选步骤 + `/token` 命令，D136）。token 就绪后的全自动编排（工具后端实现规格，D135/D137）：
 
 **事实基线（2026-09-04 抓取 API v4 OpenAPI 规范逐端点核实，D135）**
 

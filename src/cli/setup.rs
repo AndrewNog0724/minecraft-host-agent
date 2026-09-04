@@ -307,9 +307,8 @@ fn ask_natfrp_token(existing: Option<&str>) -> anyhow::Result<OptionalKeyChoice>
     }
     println!("申请指引（免费；已有账号从第 1 步登录即可）：");
     println!(
-        "  1. 注册账号 {} 或登录已有账号 {}（终端内可 Ctrl+点击）",
-        crate::cli::links::clickable("https://www.natfrp.com/auth/register"),
-        crate::cli::links::clickable("https://www.natfrp.com/auth/login")
+        "  1. 注册 / 登录 {}（入口在首页右上角，终端内可 Ctrl+点击）",
+        crate::cli::links::clickable("https://www.natfrp.com/")
     );
     println!(
         "  2. 实名认证（建隧道硬前置，面板内操作）：{}",

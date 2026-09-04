@@ -260,9 +260,8 @@ async fn configure_natfrp_token(
     env: &mut AgentEnv,
 ) -> anyhow::Result<String> {
     println!(
-        "申请入口：注册 {} 或登录 {}；实名认证 {}；密钥查看 {}（终端内可 Ctrl+点击）",
-        crate::cli::links::clickable("https://www.natfrp.com/auth/register"),
-        crate::cli::links::clickable("https://www.natfrp.com/auth/login"),
+        "申请入口：注册 / 登录 {}（首页右上角）；实名认证 {}；密钥查看 {}（终端内可 Ctrl+点击）",
+        crate::cli::links::clickable("https://www.natfrp.com/"),
         crate::cli::links::clickable("https://www.natfrp.com/user/"),
         crate::cli::links::clickable("https://www.natfrp.com/user/profile")
     );
