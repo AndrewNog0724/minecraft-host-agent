@@ -36,7 +36,14 @@ MCHA 是一个用 Rust 从零构建的 MC 开服助手：一个真正场景定�
 
 ### 第 0 步：装好环境（没装过 Rust 的机器）
 
-环境引导脚本一键搭好 rustup 工具链（Windows 还会自动装 MSVC Build Tools）并编译安装 `mcha`，每步先检测后安装、可重复执行：
+先克隆仓库并进入仓库目录（脚本用的是相对路径，必须先 `cd` 进去再执行）：
+
+```bash
+git clone git@github.com:AndrewNog0724/minecraft-host-agent.git
+cd minecraft-host-agent
+```
+
+然后环境引导脚本一键搭好 rustup 工具链（Windows 还会自动装 MSVC Build Tools）并编译安装 `mcha`，每步先检测后安装、可重复执行：
 
 ```powershell
 # Windows（PowerShell，无需管理员）
